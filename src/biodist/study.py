@@ -98,14 +98,14 @@ ARRIVE_FIELDS = [
     "health status", "injection route", "euthanasia", "euthanasia time",
     "exclusion reason", "comment",
 ]
-HOUSING = ("5 per cage, 21-23 °C, 12:12 h light/dark, food and water ad libitum, enrichment "
-           "(nesting material, shelter)")
+HOUSING = ("Five (5) mice per cage (static cages, ventilated room), 20-24 °C, 12:12 h "
+           "light/dark, food and water ad libitum, enrichment (nesting material, shelter)")
 FIELD_HINT = {"arrival": "the day the animals came in", "age at arrival": "6 wk, 42 d",
               "protocol": "IACUC / ethics protocol #",
               "euthanasia time": "HH:MM, or 2 h p.i.",
               "injection route": "i.v. tail vein…", "supplier": "Janvier, in-house…",
               "housing": HOUSING,
-              "health status": "SPF, SOPF, conventional…",
+              "health status": "conventional, SPF, SOPF…",
               "euthanasia": "method: CO2, cervical dislocation under anaesthesia…",
               "age": "12 wk, 2.5 mo, 10-12 wk — instead of a date of birth",
               "injection volume": "µL"}
@@ -116,7 +116,7 @@ ANIMAL_LISTS = {"euthanasia": ["CO2", "cervical dislocation under anaesthesia",
                 "injection route": ["i.v. tail vein", "i.v. retro-orbital", "i.p.", "s.c.",
                                     "intratumoural"],
                 "supplier": ["Janvier", "Charles River", "Envigo", "in-house"],
-                "health status": ["SPF", "SOPF", "conventional", "germ-free"],
+                "health status": ["conventional", "SPF", "SOPF", "germ-free"],
                 "housing": [HOUSING]}
 SPECIAL = ("dob", "date of birth", "age", "arrival", "age at arrival")   # their own widgets
 
@@ -143,9 +143,9 @@ FIELD_TIP = {
     "protocol": "The ethics / IACUC protocol number the work is done under",
     "housing": "ARRIVE item 15: animals per cage, temperature, light cycle, food and water, "
                "enrichment (nesting material, shelter…); the cage type if it matters",
-    "health status": "ARRIVE item 8: the microbiological status the supplier certifies — SPF "
-                     "(specific-pathogen-free), SOPF (specific and opportunistic pathogen-free), "
-                     "conventional, germ-free",
+    "health status": "ARRIVE item 8: the microbiological status of the animals and of the "
+                     "facility — conventional, SPF (specific-pathogen-free), SOPF (specific and "
+                     "opportunistic pathogen-free), germ-free",
     "injection route": "How the tracer went in: i.v. tail vein, i.p., s.c.…",
     "euthanasia": "ARRIVE item 9: the method used to kill the animal",
     "euthanasia time": "When the animal was killed: HH:MM, or 2 h p.i.",
@@ -255,7 +255,7 @@ SPECT_FIELDS = [fdef("system", "list", ["Mediso SPECT/CT"], line="hardware",
                      when="modality = SPECT"),
                 fdef("collimator", "list", ["APT62 (mouse, HS)", "APT63 (rat, HS)"],
                      line="hardware", when="modality = SPECT"),
-                fdef("isotope / EW", "list", ["99mTc, 140 keV ± 20 %"], line="acquisition",
+                fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)"], line="acquisition",
                      when="modality = SPECT"),
                 fdef("time per frame", example="50 s/frame", line="acquisition",
                      when="modality = SPECT")]

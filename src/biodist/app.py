@@ -17,6 +17,7 @@ import functools
 import html
 import json
 import math
+import os
 import re
 import statistics
 import sys
@@ -184,6 +185,19 @@ def _strip_cells(racks, extra, how, size) -> dict:
 APP_DIR = Path(__file__).resolve().parents[2]      # where BioDist.bat is
 OPTIONS_FILE = APP_DIR / "biodist_options.json"
 OLD_OPTIONS = Path(sys.prefix) / "biodist_options.json"   # until 2026.10.6.1: in the runtime
+
+
+PUBLIC = Path(os.environ.get("PUBLIC") or r"C:\Users\Public")   # any account writes there
+
+
+def _here(main, name="") -> str:
+    """Where a file dialog opens: the study's own folder, else its first data file's, else
+    C:\\Users\\Public — `name` in it."""
+    st = getattr(main, "study", None)
+    for p in [main._path] + [Path(s.path) for s in st.sources] if st else []:
+        if p and Path(p).parent.is_dir():
+            return str(Path(p).parent / name)
+    return str(PUBLIC / name)
 
 
 def options_found() -> bool:
@@ -402,7 +416,7 @@ def _has(a: Animal, key) -> bool:
 
 
 def _shows(a: Animal, key) -> bool:
-    """Whether a card shows a field: as its × or + field (or the animal window's tick) left
+    """Whether a card shows a field: as its × or the animal window's "on card" tick left
     it, else if Options lists it. An alias, a genotype or a note shows once it holds
     something; what is filled in the animal window stays off the card until ticked."""
     if key in a.show:
@@ -938,7 +952,7 @@ class AnimalCard(QFrame):
     changed = Signal()
     rebuild = Signal()
     removed = Signal(object)
-    shown = Signal(object, str, bool)      # a field hidden by its ×, or shown by + field
+    shown = Signal(object, str, bool)      # a field hidden by its × (the note shown by + note)
     expand = Signal(object)
     hop = Signal(object, str, int)         # Tab past a row's end: (animal, row, +1 | -1)
 
@@ -964,7 +978,8 @@ class AnimalCard(QFrame):
     def _field(self, key, w, tip="") -> _Field:
         if tip:
             w.setToolTip(tip)
-        f = _Field(w, f"Hide {key} — what it holds is kept; + field shows it again",
+        f = _Field(w, f"Hide {key} — what it holds is kept; the animal window (⤢) shows it "
+                      "again: its “on card” tick",
                    lambda: self.shown.emit(self.a, key, False))
         self.fields[key] = f
         return f
@@ -1140,8 +1155,6 @@ class AnimalCard(QFrame):
             r += 1
 
         foot = QHBoxLayout()
-        foot.addWidget(self._link("+ field", "Show a hidden field, or add one (tumour, diet, "
-                                  "procedure, group, euthanasia time…)", self._add_field))
         if not _shows(a, "note"):
             foot.addWidget(self._link("+ note", "A free note on this animal", self._open_note))
         foot.addWidget(self._link("+ alias", "Another name for this animal (ear tag, cage "
@@ -1325,18 +1338,6 @@ class AnimalCard(QFrame):
 
     def _open_note(self):
         self.shown.emit(self.a, "note", True)
-
-    def _add_field(self):
-        a = self.a
-        hidden = [k for k in CARD_KEYS if not _shows(a, k) and k not in ("alias", "note")]
-        hidden += [k for k in a.extra if not _shows(a, k) and k not in hidden
-                   and _xkey(a, k) not in {_xkey(a, c) for c in CARD_KEYS}]
-        used = {k.lower() for k in a.extra}
-        opts = hidden + [f for f in ARRIVE_FIELDS if f.lower() not in used]
-        name, ok = QInputDialog.getItem(self, "Add field", "A hidden field to show again, an "
-                                        "ARRIVE item, or type your own:", opts, 0, True)
-        if ok and name.strip():
-            self.shown.emit(a, name.strip(), True)
 
     def _arrival(self):
         """Supplier, arrival date, age at arrival: the grey date of birth follows."""
@@ -2458,7 +2459,7 @@ class ResultsWindow(QMainWindow):
         if not self.res:
             return
         name = f"{self.study.name or 'biodist'}_{self.unit}"
-        path, _ = QFileDialog.getSaveFileName(self, "Export results", name,
+        path, _ = QFileDialog.getSaveFileName(self, "Export results", _here(self.parent(), name),
                                               "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
             return
@@ -2524,9 +2525,6 @@ class AnimalWindow(QMainWindow):
         self.a_combo = tb.addWidget(self.c_animal)
         self.a_next = tb.addAction("▶", lambda: self.show_animal(self.i + 1))
         self.a_next.setToolTip("Next animal")
-        tb.addSeparator()
-        tb.addAction("+ field", self._add_field).setToolTip("A field of your own, on every "
-                                                            "animal if Options says so")
         tb.addSeparator()
         self.a_table = tb.addAction("▦ every animal")
         self.a_table.setCheckable(True)
@@ -2676,7 +2674,7 @@ class AnimalWindow(QMainWindow):
 
     def _bio_more(self, g, r) -> int:
         """Under the biodistribution info: the other losses of the dose and the notes, as
-        many as needed, each with its ×; + field adds one."""
+        many as needed, each with its ×; + loss / note adds one."""
         a, day = self.a, self.main.study.day
 
         def x_button(fn, tip):
@@ -2716,7 +2714,7 @@ class AnimalWindow(QMainWindow):
             g.addWidget(x_button(lambda i=i: a.bio_notes.pop(i), "Remove this note"), r, 2)
             r += 1
         add = QToolButton()
-        add.setText("+ field")
+        add.setText("+ loss / note")
         add.setPopupMode(QToolButton.InstantPopup)
         add.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};}} QToolButton::menu-indicator{{image:none;}}")
         m = QMenu(add)
@@ -2861,8 +2859,11 @@ class AnimalWindow(QMainWindow):
             c.setCurrentText(get())
             c.lineEdit().setPlaceholderText(sp["example"])
             c.setToolTip("Options lists these; anything can be typed")
-            done = self._commit(lambda: (put(c.currentText()), self._split(a),
-                                         redraw and QTimer.singleShot(0, self._redraw)))
+            # its line edit says "finished" as its own list opens: a redraw then (a field
+            # others show by) took the combo, and the list with it — only on a change
+            done = self._commit(lambda: c.currentText() != get() and (
+                put(c.currentText()), self._split(a),
+                redraw and QTimer.singleShot(0, self._redraw)))
             c.activated.connect(done)
             c.lineEdit().editingFinished.connect(done)
             return [c]
@@ -3159,12 +3160,6 @@ class AnimalWindow(QMainWindow):
         self.statusBar().showMessage(f"{key} copied to {len(targets)} animal(s) — Ctrl+Z in the "
                                      "main window undoes it", 6000)
 
-    def _add_field(self):
-        name, ok = QInputDialog.getText(self, "Add field", "Field name:")
-        if ok and name.strip():
-            self.main._show_field(self.a, name.strip(), True)
-            QTimer.singleShot(0, lambda: self.refresh(force=True))
-
 
 # ------------------------------------------------------------------- options window
 class OptionsWindow(QMainWindow):
@@ -3175,7 +3170,9 @@ class OptionsWindow(QMainWindow):
         super().__init__(main)
         self.main = main
         self.setWindowTitle(f"{APP_NAME} — options")
-        self.resize(860, 560)
+        self.setMinimumSize(820, 520)
+        scr = QApplication.primaryScreen().availableGeometry()   # the Results page whole
+        self.resize(min(980, scr.width() - 40), min(900, scr.height() - 60))
         self.topics = QListWidget()
         self.topics.setFixedWidth(190)
         self.pages = QStackedWidget()
@@ -3236,7 +3233,11 @@ class OptionsWindow(QMainWindow):
                            ("Study file", self._study_page()),
                            ("Log", self._log_page())):
             self.topics.addItem(name)
-            self.pages.addWidget(page)
+            sc = QScrollArea()                   # a page taller than the window scrolls —
+            sc.setWidgetResizable(True)          # squeezed, its rows overlapped (Results)
+            sc.setFrameShape(QFrame.NoFrame)
+            sc.setWidget(page)
+            self.pages.addWidget(sc)
         self.topics.setCurrentRow(at)
         for sb in self.pages.findChildren(QAbstractSpinBox):
             sb.setKeyboardTracking(False)        # applied on Enter or leaving, not per key
@@ -3271,8 +3272,9 @@ class OptionsWindow(QMainWindow):
 
     def _cards(self):
         w, v = self._page("Animal cards", "The fields a card shows until its × hides one or "
-                          "+ field shows one. A field holding something shows anyway, until "
-                          "hidden; hiding never deletes what it holds.")
+                          "the animal window's “on card” tick shows one. A field holding "
+                          "something shows anyway, until hidden; hiding never deletes what it "
+                          "holds.")
         grid = QGridLayout()
         for i, k in enumerate(CARD_KEYS):
             c = QCheckBox(k)
@@ -3282,7 +3284,7 @@ class OptionsWindow(QMainWindow):
             grid.addWidget(c, i % 7, i // 7)
         v.addLayout(grid)
         v.addSpacing(10)
-        self._check(v, "field_all", "+ field and × apply to every animal",
+        self._check(v, "field_all", "× and “on card” apply to every animal",
                     "Off: only to the card they were clicked on (a note is always one card's)")
         f = QFormLayout()
         n = QSpinBox()
@@ -3395,7 +3397,8 @@ class OptionsWindow(QMainWindow):
                 "can still be typed; time · p.i. — HH:MM or after the injection (2 h p.i.), the "
                 "other worked out; date · age · D-n — a day as a date, the animal's age (8 wk) "
                 "or days from the study day (D-14), the others worked out",
-                "For a list: its items, commas between", "Shown in grey while the field is "
+                "For a list: its items, commas between (one in brackets stays in its item: "
+                "APT62 (mouse, HS))", "Shown in grey while the field is "
                 "empty", "Fields with the same line name sit side by side on one line, under "
                 "that name (hardware: system, collimator)",
                 "Shown only when another field holds a value: modality = SPECT (or SPECT, PET)"]
@@ -3419,7 +3422,8 @@ class OptionsWindow(QMainWindow):
             def cell(r, c):
                 return (t.item(r, c).text().strip() if t.item(r, c) else "") if c < cols else ""
             return [fdef(cell(r, 0), keys[t.cellWidget(r, 1).currentIndex()],
-                         [x.strip() for x in cell(r, 2).split(",") if x.strip()], cell(r, 3),
+                         [x.strip() for x in re.split(r",(?![^()]*\))", cell(r, 2))   # not
+                          if x.strip()], cell(r, 3),               # in brackets: (mouse, HS)
                          cell(r, 4), cell(r, 5))
                     for r in range(t.rowCount()) if cell(r, 0)]
 
@@ -4032,7 +4036,7 @@ class OptionsWindow(QMainWindow):
         f.addRow("Named", row)
         named()
         row = QHBoxLayout()
-        e = _edit(lg["folder"], str(Path(sys.prefix) / "logs"))
+        e = _edit(lg["folder"], str(APP_DIR / "logs"))
         e.editingFinished.connect(lambda: put(folder=e.text().strip()))
         b = QPushButton("…")
         b.setFixedWidth(30)
@@ -4765,7 +4769,8 @@ class ReportWindow(QMainWindow):
     def save(self):
         ext, lab = self.FORMATS[self.c_format.currentIndex()]
         name = f"{self.main._eff.name or 'biodist'}_report{ext}"
-        path, _ = QFileDialog.getSaveFileName(self, "Save report", name, f"{lab} (*{ext})")
+        path, _ = QFileDialog.getSaveFileName(self, "Save report", _here(self.main, name),
+                                              f"{lab} (*{ext})")
         if not path:
             return
         path = str(Path(path).with_suffix(ext)) if Path(path).suffix.lower() != ext else path
@@ -5125,11 +5130,9 @@ class MainWindow(QMainWindow):
             a.show[key] = on
         if not on and key != "note":
             self.log(f"{key} hidden on {'every card' if PREFS['field_all'] else animal.label}"
-                     f" — what it holds is kept; + field shows it again, Ctrl+Z undoes it")
+                     f" — what it holds is kept; the animal window's “on card” tick shows it "
+                     "again, Ctrl+Z undoes it")
         self._later(self._sync)()
-
-    def _add_field(self, animal, name):
-        self._show_field(animal, name, True)
 
     def _date_edited(self, d: QDate):
         if self._loading:
@@ -5252,7 +5255,7 @@ class MainWindow(QMainWindow):
         self._sync()
 
     def open_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Add files", "",
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add files", _here(self),
                                                 "Data (*.xlsx *.csv *.json);;All files (*)")
         if paths:
             self.add_files([Path(p) for p in paths])
@@ -6553,7 +6556,8 @@ class MainWindow(QMainWindow):
     def save_log(self, as_new=False) -> bool:
         if as_new or not self._log_path:
             path, _ = QFileDialog.getSaveFileName(
-                self, "Save the log", f"{self.study.name or 'BioDist'}_log.txt", "Text (*.txt *.log)")
+                self, "Save the log", _here(self, f"{self.study.name or 'BioDist'}_log.txt"),
+            "Text (*.txt *.log)")
             if not path:
                 return False
             self._log_path = Path(path)
@@ -6574,7 +6578,7 @@ class MainWindow(QMainWindow):
         lg = PREFS["log"]
         if lg["autosave"] == "off" or not self._log_done + self._log:
             return
-        folder = Path(lg["folder"] or Path(sys.prefix) / "logs")
+        folder = Path(lg["folder"] or APP_DIR / "logs")   # beside the options, not the runtime
         try:
             folder.mkdir(parents=True, exist_ok=True)
             if lg["autosave"] == "session":
@@ -6824,7 +6828,8 @@ class MainWindow(QMainWindow):
     def open_study(self):
         if not self._keep_or_save():
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Open study", "", "BioDist study (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open study", _here(self),
+                                              "BioDist study (*.json)")
         if path:
             self._load_study(Path(path))
 
@@ -6862,7 +6867,7 @@ class MainWindow(QMainWindow):
     def save_study(self, as_new=False) -> bool:
         if as_new or not self._path:
             name = (self.study.name or "study") + ".json"
-            path, _ = QFileDialog.getSaveFileName(self, "Save study", name,
+            path, _ = QFileDialog.getSaveFileName(self, "Save study", _here(self, name),
                                                   "BioDist study (*.json)")
             if not path:
                 return False

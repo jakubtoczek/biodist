@@ -368,7 +368,7 @@ a0 = w.study.animals[0]
 assert (a0.inj_time, card.e_inj.text()) == ("d+1 8:48:21", "08:48 d+1"), a0.inj_time
 card.e_inj.editingFinished.emit()                 # left untouched: the seconds stay
 assert a0.inj_time == "d+1 8:48:21", a0.inj_time
-w._add_field(a0, "tumour model")
+w._show_field(a0, "tumour model", True)            # the animal window's "on card" tick
 app.processEvents()
 assert all("tumour model" in x.extra for x in w.study.animals)
 assert w.t_tissues.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn
@@ -397,8 +397,7 @@ app.processEvents()
 labels = [x.text().strip() for x in w.animal_win.scroll.widget().findChildren(QLabel)]
 assert "modality" in labels and "route" not in labels, labels
 plus = next(b for b in w.animal_win.scroll.widget().findChildren(QToolButton)
-            if b.text() == "+ field" and b.popupMode() != QToolButton.InstantPopup)
-# ^ a procedure's; the Biodistribution info's + field opens a menu (modal: it would wait)
+            if b.text() == "+ field")                # a procedure's: the only one left
 plus.click()                                       # a click: the name box shows
 more = plus.parent().findChild(QLineEdit)
 assert not more.isHidden() and plus.isHidden()
@@ -419,6 +418,11 @@ al = w.study.animals[-1]
 assert [e["kind"] for e in al.events] == ["imaging", "anaesthesia"], al.events
 combo = next(c for c in w.animal_win.scroll.widget().findChildren(QComboBox)
              if "SPECT" in [c.itemText(i) for i in range(c.count())])
+root = w.animal_win.scroll.widget()
+combo.lineEdit().editingFinished.emit()               # what its list opening says: no change,
+app.processEvents()                                   # no redraw (it took the open list away)
+app.processEvents()
+assert w.animal_win.scroll.widget() is root, "the modality list stays open"
 combo.setCurrentText("SPECT/CT")
 combo.lineEdit().editingFinished.emit()
 app.processEvents()
@@ -476,7 +480,7 @@ tmp.unlink(missing_ok=True)
 ow = w.options_win
 ow.topics.setCurrentRow([ow.topics.item(i).text() for i in range(ow.topics.count())]
                         .index("Results"))
-page = ow.pages.currentWidget()
+page = ow.pages.currentWidget().widget()            # each page in its scroll area
 assert not w.study.ranges, "no expected range until one is set"
 plus = next(b for b in page.findChildren(QPushButton) if b.text() == "+")
 plus.menu().aboutToShow.emit()

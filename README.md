@@ -71,8 +71,11 @@ The version is in the window title and on every report.
 
 ```
 uv run python -m biodist                         # launch
-uv run python -m biodist.hidex --self-check      # readers vs 260903, a Wizard2 export
-uv run python -m biodist.study                   # model + %IA/g self-check
-uv run python misc/smoke_test.py                 # headless UI
+uv run python -m biodist.hidex --self-check      # file reader vs internal reference exports
+uv run python -m biodist.study                   # calculations (%IA/g) vs internal reference values
+uv run python misc/smoke_test.py                 # the whole window, driven without a screen
 uv run python misc/bump.py                       # stamp today's date as the version
 ```
+
+The three checks read reference exports kept outside this repository (not shared); their
+folder can be given at the end of the command.

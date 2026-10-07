@@ -7,3 +7,4 @@ build/
 dist/
 uv.lock
 biodist_options.json
+logs/
