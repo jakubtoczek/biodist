@@ -1,0 +1,22 @@
+[project]
+name = "biodist"
+dynamic = ["version"]
+description = "BioDist — biodistribution analysis from gamma counter exports (Hidex AMG, Wizard2): %IA/g, SUV and export"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6-Essentials>=6.6",
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+biodist = "biodist.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/biodist"]
+
+[tool.hatch.version]
+path = "src/biodist/__init__.py"
