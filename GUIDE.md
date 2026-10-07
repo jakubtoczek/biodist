@@ -5,6 +5,14 @@ countings) into a biodistribution table: **%IA/g**, %IA, SUV, Bq, masses — one
 one animal per column, ready to paste into Excel — and writes a report of how every value
 was made. Everything is kept in one study file.
 
+> **Check the guesses.** BioDist guesses what each file is and where its vials go — from
+> tube weights, run times and activities — and says why in the log. It is a starting
+> point, not a result: before using the values, check in Data sources that every file has
+> the right kind, animals and tissues, and read the log's ✗ and ⚠. A guess that looks
+> right can still be wrong (two racks of tubes that happen to weigh alike, a rack weighed
+> out of turn, a vial left out). The rules that choose among repeated countings and
+> weighings are defaults too: review them for your study (Options › Results).
+
 - [Features](#features)
 - [A study, step by step](#a-study-step-by-step)
 - [The board](#the-board): animals, tissues, data sources, log
@@ -21,6 +29,10 @@ was made. Everything is kept in one study file.
 
 **Reading the data**
 - Hidex AMG *AutoExport* `.xlsx` files of every run type: tare only, count only, weigh and count.
+- PerkinElmer Wizard2 `.csv` exports, countings only (no weighings, no efficiency in the
+  file: it is typed in Data sources). Added to broaden the tool's reach: the reader is
+  checked on sample exports, but no study using a Wizard2 has been run through BioDist
+  end to end yet — check its values with particular care.
 - Drop anything anywhere on the window: counter files, a tissue list (one column), a saved
   study. Files dropped before the tissue list wait for it.
 - Each file's kind is worked out: empty tubes (tare), filled tubes (weight), counting,
@@ -113,7 +125,8 @@ was made. Everything is kept in one study file.
 9. **Results** (Ctrl+R): pick the unit; click any cell to see where it comes from.
 10. **Report** (Ctrl+P): tick the sections, save.
 
-Files can come in any order and at any time: the guess is made again after every change.
+Files can come in any order and at any time: the guess is made again after every change —
+so check Data sources and the log again after each file added.
 
 ---
 
@@ -296,9 +309,11 @@ studies):
 
 ## How the numbers are made
 
-**Activity.** The counter gives Bq corrected for dead time and normalised to one instant per
-file, using the counting efficiency of each energy window (Bq = CPM / 60 / efficiency).
-BioDist decay-corrects it with the animal's isotope to each animal's injection time (or one
+**Activity.** The Hidex gives Bq corrected for dead time and normalised to one instant per
+file, using the counting efficiency of each energy window (Bq = CPM / 60 / efficiency). A
+Wizard2 gives CPM, made Bq with the efficiency typed in Data sources; when its protocol
+decay-corrected the CPM, the time it corrected them to is worked out from the vials and
+undone (the log says so). BioDist decay-corrects it with the animal's isotope to each animal's injection time (or one
 time for all). **%IA/g does not depend on that time** — dose and tissue are decayed alike.
 
 **Injected activity** = syringe full − syringe empty − other losses − tail (the card's, else

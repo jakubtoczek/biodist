@@ -624,6 +624,14 @@ def _edit(text="", placeholder="", width=0) -> QLineEdit:
     return e
 
 
+def _fit(e: QLineEdit, lo=34, hi=150) -> int:
+    """A field as wide as what it holds (or its placeholder), within lo-hi px."""
+    w = max(lo, min(hi, e.fontMetrics().horizontalAdvance(e.text() or e.placeholderText())
+                    + 18))
+    e.setFixedWidth(w)
+    return w
+
+
 def _ro(text, color="") -> QTableWidgetItem:
     """A table cell that is read, not typed into."""
     it = QTableWidgetItem(text)
@@ -995,16 +1003,18 @@ class AnimalCard(QFrame):
         r = 0
 
         head = QHBoxLayout()
-        self.e_id = _edit(a.id, "ID", 70)
+        self.e_id = _edit(a.id, "ID")
         self.e_id.setStyleSheet("font-weight:600;")
-        rm = QToolButton()
+        _fit(self.e_id)                    # as wide as the ID: the alias, age, dose fit beside
+        self.e_id.textChanged.connect(lambda _: (_fit(self.e_id), self._place_alias()))
+        rm = self.rm = QToolButton()
         rm.setText("×")
         rm.setToolTip("Remove this animal (Ctrl+Z brings it back)")
         rm.setStyleSheet("QToolButton{border:none;color:#c06060;font-weight:bold;}")
         rm.clicked.connect(lambda: self.removed.emit(self.a))
         head.addWidget(self.e_id)
         self.head = head
-        self._gap = QWidget()          # stands in for the alias when that moves down a line
+        self._gap = QWidget()          # the age and the dose to the right, the alias or not
         self._gap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         head.addWidget(self._gap)
         self.l_age = QLabel()
@@ -1278,21 +1288,31 @@ class AnimalCard(QFrame):
             " — the injection site (tail) is not typed yet"))
 
     def _place_alias(self):
-        """The first alias sits on the ID line while the age and the dose leave it room."""
-        if not self.e_aliases:
+        """The aliases sit on the ID line, as wide as they are, while the age and the dose
+        leave them room (16.png: ID, alias, age, dose on one line); else on a line below,
+        the card's width."""
+        if not self.e_aliases or not hasattr(self, "rm"):
             return
-        e = self.alias_w
-        free = (self.width() - 16 - self.e_id.width() - 60
-                - self.l_age.sizeHint().width() - self.l_dose.sizeHint().width())
-        need = self.e_aliases[0].fontMetrics().horizontalAdvance(self.e_aliases[0].text()) + 24
-        inline = free >= max(70, need)       # never squeezed out of sight (260903 animal 6)
-        self.head.removeWidget(e)
-        self.alias_box.removeWidget(e)
+        e, ed = self.alias_w, self.e_aliases[0]
+        sp = h if (h := self.head.spacing()) >= 0 else 6     # -1: the style's, Fusion's 6
+        used = (self.e_id.width() + self.l_age.sizeHint().width() + self.l_dose.sizeHint().width()
+                + self.rm.sizeHint().width() + 4 + 5 * sp)
+        free = self.width() - 16 - used - 4
+        need = max(40, ed.fontMetrics().horizontalAdvance(ed.text() or ed.placeholderText())
+                   + 18)
+        inline = free >= need                # never squeezed out of sight (260903 animal 6)
         if inline:
-            self.head.insertWidget(1, e)
+            ed.setFixedWidth(need)
         else:
-            self.alias_box.insertWidget(0, e)
-        self._gap.setVisible(not inline)
+            ed.setMinimumWidth(0)
+            ed.setMaximumWidth(16777215)
+        if (self.head.indexOf(e) >= 0) != inline:
+            self.head.removeWidget(e)
+            self.alias_box.removeWidget(e)
+            if inline:
+                self.head.insertWidget(1, e)
+            else:
+                self.alias_box.insertWidget(0, e)
         self.layout().invalidate()          # the row of cards is sized off this card's hint
 
     def _set_loss(self, i, f, text, ed=None):
@@ -1323,6 +1343,7 @@ class AnimalCard(QFrame):
         self.alias_w = self._field("alias", e)
         self.alias_box.addWidget(self.alias_w)   # _place_alias may move it up
         e.editingFinished.connect(self._pull)
+        e.textChanged.connect(lambda _: self._place_alias())
         if focus:
             e.setFocus()
 
@@ -5685,7 +5706,7 @@ class MainWindow(QMainWindow):
                 w.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
                 w.setFixedSize(card.width() + w.verticalScrollBar().sizeHint().width(), h)
             self.cards_row.addWidget(w, 0, Qt.AlignTop)
-            cards.append(h)
+            cards.append(w)
         add = QToolButton()
         add.setIcon(_plus(16))
         add.setIconSize(QSize(16, 16))
@@ -5695,12 +5716,21 @@ class MainWindow(QMainWindow):
                           "QToolButton:hover{background:#3d3d3d;}")
         add.clicked.connect(self.add_animal)
         self.cards_row.addWidget(add, 0, Qt.AlignTop)
-        tallest = max(cards, default=40)
-        self.cards_scroll.setFixedHeight(
-            tallest + self.cards_scroll.horizontalScrollBar().sizeHint().height() + 6)
+        self._fit_cards(cards)
+        QTimer.singleShot(0, lambda: self._fit_cards(cards))   # once styled: fonts, DPI
         self.sec_animals.set_note(f"{len(self.study.animals)}")
         if self._want:                           # the field Tab went to, rebuilt meanwhile
             self._focus_card(*self._want)
+
+    def _fit_cards(self, cards):
+        """The Animals section as tall as its tallest card — measured once the cards are
+        styled (before, at 125 % display scale, it came out a few px short: 16.png)."""
+        hs = [w.maximumHeight() if isinstance(w, QScrollArea) else w.sizeHint().height()
+              for w in cards if isValid(w)]
+        if hs or not cards:
+            self.cards_scroll.setFixedHeight(
+                max(hs, default=40) + self.cards_scroll.horizontalScrollBar().sizeHint().height()
+                + 2)
 
     def _hop(self, a, row, step):
         """Tab past the end of a card's row: the same row on the next card (Shift+Tab: the

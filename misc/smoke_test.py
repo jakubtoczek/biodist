@@ -373,6 +373,16 @@ app.processEvents()
 assert all("tumour model" in x.extra for x in w.study.animals)
 assert w.t_tissues.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn
 assert isinstance(card, AnimalCard)
+# 16.png: a short ID and alias stay on one line with the age and the dose; the Animals
+# section is as tall as its tallest card (no scrolling)
+a0.aliases = ["V7"]
+w._sync()
+app.processEvents()
+app.processEvents()
+c0 = w.cards[0]
+assert c0.e_id.width() < 60 and (app.platformName() == "offscreen"   # no fonts there:
+                                  or c0.head.indexOf(c0.alias_w) >= 0), c0.e_id.width()  # no width
+assert w.cards_scroll.verticalScrollBar().maximum() == 0
 
 # a card's × hides a field on every card, and keeps what it holds
 a0.extra["sex"] = "F"
