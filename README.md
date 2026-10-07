@@ -26,7 +26,8 @@ No admin rights, no PATH or registry changes.
 
 The window is a board, top to bottom: **Animals**, **Tissues**, **Data sources**, **Log**.
 **Drop files anywhere on it** — the counter's exports, the tissue list, a saved study — and
-BioDist puts each one where it belongs. Hover anything for what it does.
+BioDist puts each one where it belongs. Hover anything for what it does. Every feature, a
+study step by step and how the numbers are made: **[the user guide](GUIDE.md)**.
 
 - **Animals** — a card per animal: ID, weight, isotope and tracer, syringe full and empty
   with their times, injection time, tail (activity left at the injection site). **+** adds

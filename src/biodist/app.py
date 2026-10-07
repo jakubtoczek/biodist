@@ -5870,7 +5870,7 @@ class MainWindow(QMainWindow):
         self._loading = was
         self.t_tissues.fit(PREFS["table_rows"])
         say = []
-        if "ref" in PREFS["tissue_note"] and cv == "bq":
+        if "ref" in PREFS["tissue_note"] and cv == "bq" and res.rounds:   # a counting yet
             say.append("Activities at each animal's injection time (decay-corrected)"
                        if res.refs else f"Activities at {res.ref:%d %b %Y %H:%M}" + (
                            "" if st.ref_time else ", the first counting's reference")
@@ -6283,7 +6283,9 @@ class MainWindow(QMainWindow):
                      for sl in run.slots]
             rows.append((x.uid, Path(x.path).name, vials,
                          strip_summary([m.get(sl.key) for sl in run.slots]),
-                         self._strip_open.get(x.uid, bool(raw) or len(m) < len(run.slots))))
+                         self._strip_open.get(x.uid, bool(raw) or len(m) < len(run.slots)
+                                              and bool(eff.tissues))))   # no list: nothing
+        #                                                                  to place them on yet
         self._strip_rows = rows
         self._summaries = {r[0]: r[3] for r in rows if r[2]}
         extra = [x for x in STRIP_ROWS if x in PREFS["strip_rows"]]
@@ -6602,12 +6604,14 @@ class MainWindow(QMainWindow):
             issue("No injected activity yet — fill the syringe activity and times on the "
                   "animal cards, or drop the lab's injected-activity sheet.")
         if not s.tissues:
-            issue("No tissue list — drop a one-column file, or paste one.")
+            issue("No tissue list — drop a one-column file, or paste one." + (
+                f" The {len(s.sources)} file(s) wait for it: placed once it is there."
+                if s.sources else ""))
         for n in res.notes:
             issue(n, "✗")
         for n in self.auto_notes:
             issue(n, "↻" if "recount" in n else "⚠")
-        for n in unplaced(s, self.runs):             # checked apart from the guess
+        for n in unplaced(s, self.runs) if s.tissues else []:   # apart from the guess
             issue(n, "✗")
         fd = self._file_date()
         if fd and fd != s.date:

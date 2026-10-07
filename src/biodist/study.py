@@ -71,7 +71,7 @@ def guess_role(name: str) -> str:
     n = name.strip().strip("()").strip().lower()             # "(empty)" is an empty vial
     if n.startswith(("tail", "inj")):
         return "tail"
-    if n in ("ctrl", "control", "blank", "empty", "control tube"):
+    if re.match(r"(ctrl|control|blank|empty|bare)\b", n):  # empty vial 2:7, control tube
         return "blank"
     if n in ("std", "standard", "injectate"):
         return "standard"
@@ -98,8 +98,10 @@ ARRIVE_FIELDS = [
     "health status", "injection route", "euthanasia", "euthanasia time",
     "exclusion reason", "comment",
 ]
-HOUSING = ("Five (5) mice per cage (static cages, ventilated room), 20-24 °C, 12:12 h "
-           "light/dark, food and water ad libitum, enrichment (nesting material, shelter)")
+HOUSINGS = [f"Five (5) mice per cage (static cages in a ventilated {where}), 20-24 °C, 12:12 h "
+            "light/dark, food and water ad libitum, enrichment (nesting material, shelter)"
+            for where in ("room", "cabinet")]           # the housing list: one or the other
+HOUSING = HOUSINGS[0]
 FIELD_HINT = {"arrival": "the day the animals came in", "age at arrival": "6 wk, 42 d",
               "protocol": "IACUC / ethics protocol #",
               "euthanasia time": "HH:MM, or 2 h p.i.",
@@ -117,7 +119,7 @@ ANIMAL_LISTS = {"euthanasia": ["CO2", "cervical dislocation under anaesthesia",
                                     "intratumoural"],
                 "supplier": ["Janvier", "Charles River", "Envigo", "in-house"],
                 "health status": ["conventional", "SPF", "SOPF", "germ-free"],
-                "housing": [HOUSING]}
+                "housing": HOUSINGS}
 SPECIAL = ("dob", "date of birth", "age", "arrival", "age at arrival")   # their own widgets
 
 
@@ -664,6 +666,7 @@ MIN_COUNTS = 10000       # a counting aimed at (±1 %); fewer is still taken whe
 VALID_COUNTS = 1000      # ... under which it is not valid (±3 %)
 BLANK_COUNTS = 1000      # a blank vial counting this many is not empty (background: 100-600)
 RECOUNT_COUNTS = 1000    # vials compared to tell a recount (±3 %, under its 10 % test)
+TUBE_OUT_G = 0.5         # a filled weighing this much under its empty: a tube taken out
 DRIFT_MODES = {"": "off", "scale": "scale: each tube by the control tubes' ratio",
                "offset": "offset: each tube minus the control tubes' change"}
 
@@ -1966,8 +1969,12 @@ def _match_racks(blocks) -> list[tuple[int, int]]:
     tube, so the smallest non-negative gains are taken first. A run whose every rack matches
     the same-place rack of one other run goes first: animals are weighed whole far more often
     than their racks are shuffled. One tube of a rack may disagree (a tube taken out between
-    the two weighings — 260930: a bare vial weighed with a tube in it the first time): a
-    match with such a tube ranks after the clean ones.
+    the two weighings — 260930: a bare vial weighed with a tube in it the first time, 2.75 g
+    lighter): a match with such a tube ranks after the clean ones; only a tube's worth
+    (`TUBE_OUT_G`) — 128 mg lighter is another tube, not a tube taken out.
+    A run is filled only when every one of its racks matched: two runs of empty tubes
+    (261007, six of them) can line up on one 7-tube rack by chance (tube weights spread
+    ±0.1 g, each tube heavier or lighter at even odds), seldom on all 17 tubes.
     ponytail: greedy, not an assignment solver — fine for a few dozen racks."""
     runs: dict[int, list[int]] = {}
     for i, (r, _) in enumerate(blocks):
@@ -1982,6 +1989,7 @@ def _match_racks(blocks) -> list[tuple[int, int]]:
             odd = [g for g in d if g <= -0.005]
             rest = [g for g in d if g > -0.005]
             if len(d) == len(a) and len(odd) <= (len(d) >= 4) and rest \
+                    and all(g <= -TUBE_OUT_G for g in odd) \
                     and statistics.median(d) > 0.010:
                 cands.append((len(odd), min(rest) < 0, abs(min(rest)), i, j))
     ok = {(i, j) for odd, *_, i, j in cands if not odd}   # a whole run: clean racks only
@@ -1989,17 +1997,24 @@ def _match_racks(blocks) -> list[tuple[int, int]]:
     def whole(i, j):
         a, b = runs[id(blocks[i][0])], runs[id(blocks[j][0])]
         return len(a) == len(b) and all(p in ok for p in zip(a, b))
-    pairs, used, side = [], set(), {}     # side: run -> "empty" | "filled", never both
-    for _, w, *_, i, j in sorted((c[0], not whole(c[-2], c[-1]), *c) for c in cands):
-        ri, rj = id(blocks[i][0]), id(blocks[j][0])
-        # an empty run matched whole again is the same tubes weighed a second time
-        if (i in used and w) or j in used or side.get(ri, "empty") != "empty" \
-                or side.get(rj, "filled") != "filled":
-            continue
-        used |= {i, j}
-        side[ri], side[rj] = "empty", "filled"
-        pairs.append((i, j))
-    return pairs
+    order = sorted((c[0], not whole(c[-2], c[-1]), *c) for c in cands)
+    partial: set[int] = set()             # runs not filled after all: a rack matched nothing
+    while True:
+        pairs, used, side = [], set(), {}   # side: run -> "empty" | "filled", never both
+        for _, w, *_, i, j in order:
+            ri, rj = id(blocks[i][0]), id(blocks[j][0])
+            # an empty run matched whole again is the same tubes weighed a second time
+            if (i in used and w) or j in used or rj in partial \
+                    or side.get(ri, "empty") != "empty" or side.get(rj, "filled") != "filled":
+                continue
+            used |= {i, j}
+            side[ri], side[rj] = "empty", "filled"
+            pairs.append((i, j))
+        short = {r for r, sd in side.items() if sd == "filled"
+                 and not all(k in used for k in runs[r])}
+        if not short:
+            return pairs
+        partial |= short
 
 
 def _recount_of(study: Study, run: hidex.Run, earlier: list[hidex.Run]) -> hidex.Run | None:
@@ -2098,13 +2113,13 @@ def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = Non
         if s.auto:
             if any(owner[j][0] is s for _, j in pairs):
                 s.kind = "filled"
-            elif any(owner[i][0] is s for i, _ in pairs):
-                s.kind = "empty"
-            elif pairs and not any(o.kind == "weigh_count" and len(runs[o.path].slots)
-                                   == len(runs[s.path].slots) for o in srcs):
-                # ponytail: a same-size count + weight run is taken for its filled side
-                notes.append(f"{Path(s.path).name}: no rack matches another weighing by tube "
-                             f"weight — check its kind")
+            else:          # matched nothing: empty tubes, as when dropped (261007: a kind
+                s.kind = "empty"   # guessed "filled" before stayed, Guess again kept it)
+                if pairs and not any(o.kind == "weigh_count" and len(runs[o.path].slots)
+                                     == len(runs[s.path].slots) for o in srcs):
+                    # ponytail: a same-size count + weight run is taken for its filled side
+                    notes.append(f"{Path(s.path).name}: no rack matches another weighing by "
+                                 f"tube weight — check its kind")
     deal([s for s in tares if s.auto and s.kind == "empty"], ("empty",))
     matched: dict[str, list[str]] = {}           # weighing uid -> the files its racks matched
     for i, j in pairs:
@@ -2851,6 +2866,20 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
         assert all(c.mass_src.startswith("Tare-") for c in vres.cells.values() if c.mass_src)
         bare = [n for n in vres.notes if "no tube in that vial" in n]   # one line for all six
         assert len(bare) == 1 and bare[0].startswith("Kidney of V1 ("), vres.notes
+    # 261007: six runs of empty tubes, nothing filled yet. Two racks of them line up by
+    # chance (one tube 128 mg / 67 mg under: another tube, not one taken out) — all empty,
+    # one per animal in time order
+    d7 = d.parent / "data_261007" / "files"
+    if d7.is_dir():
+        e = Study(date="2026-10-07", animals=[Animal(str(i)) for i in range(1, 7)],
+                  tissues=[Tissue(t) for t in ["control tube", "Blood", "Liver"] * 5
+                           + ["Lungs", "Spleen"]])
+        e.tissues = [Tissue(n) for n in unique_names([t.name for t in e.tissues])]
+        e.sources = [Source(uid=f"e{i}", path=str(p), kind="filled" if i in (1, 5) else
+                            "empty") for i, p in enumerate(sorted(d7.glob("*.xlsx")))]
+        auto_assign(e, load_runs(e))             # ^ as the first guess left them: undone
+        assert [(x.kind, x.animals) for x in e.sources] == [
+            ("empty", [str(i)]) for i in range(1, 7)], [(x.kind, x.animals) for x in e.sources]
     # efficiencies: the file's own, or the same typed (CPM / 60 / efficiency) — one answer;
     # none at all: CPM only, and said
     s.file_eff = False
