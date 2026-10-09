@@ -122,8 +122,9 @@ was made. Everything is kept in one study file.
 **Counting**
 
 7. Drop the counting files. A second pass over the same vials is recognised as a recount;
-   the passes (rounds — a pause of 20 min also starts one) are dealt to the animals in round
-   order, so a file missing from one round shifts no animal.
+   the passes (a pause of 20 min also ends one) are dealt to the animals in round order, so
+   a file missing from one round shifts no animal. **Round n** holds each vial's nth pass: a
+   group of animals counted later, after a pause, is still their round 1.
 8. Read the **log**: what each file was taken for and why, and anything that looks wrong.
 
 **Results and report**

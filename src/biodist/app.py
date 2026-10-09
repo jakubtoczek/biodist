@@ -2147,7 +2147,7 @@ class ResultsWindow(QMainWindow):
             grey("No counting or weighing here.")
         for what, head, tip in (
                 ("count", "Activity — the countings",
-                 "A round: one pass of the counter over the vials (count+weight: weighed in the "
+                 "A round: each vial's nth pass of the counter (count+weight: weighed in the "
                  "same pass), " + ("a row per energy window" if PREFS["panel_windows"] == "rows"
                                    else "its energy window picked in the row")
                  + ". A click on a row " + PANEL_CLICK[PREFS["panel_click"]] + ". Several: "

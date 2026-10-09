@@ -1456,21 +1456,35 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                      + f" ({len(files)} file(s)): activities in CPM only until it is typed — "
                      "Data sources ▸ efficiencies")
 
-    # ---- counting rounds: the count files in time order, a new round whenever a vial comes
-    # back or after a pause — one round is one pass of the counter over the vials
-    rounds: list[list[str]] = []
+    # ---- counting rounds: round n holds each vial's nth pass. The count files in time order
+    # make runs — a new one whenever a vial comes back or after a pause in a batch —, each run
+    # in the first round that has none of its vials: a run of new vials after a pause joins
+    # the round before (260903: animals 6-10 counted the morning after 1-5, the tumours
+    # weighed and counted an animal group at a time), a run going over vials again starts
+    # the next (261007: round 2 began with animal 1, whose round-1 file was left out)
+    runs_: list[list[str]] = []
     seen: set = set()
-    end, kept = None, set()                      # kept: the round's tissue batches
+    end, kept = None, set()                      # kept: the run's tissue batches
     for name in sorted(covered, key=lambda n: spans.get(n, (_dt.datetime.max,))[0]):
         t0, t1 = spans.get(name, (None, None))
         mine = {t.batch for _, tn in covered[name] if (t := study.tissue(tn))}
-        if not rounds or covered[name] & seen or (end and t0 and t0 - end > ROUND_GAP
-                                                  and mine & kept):
-            rounds.append([])                    # a vial back, or a pause in a batch
+        if not runs_ or covered[name] & seen or (end and t0 and t0 - end > ROUND_GAP
+                                                 and mine & kept):
+            runs_.append([])                     # a vial back, or a pause in a batch
             seen, kept = set(), set()
         end, kept = t1 or end, kept | mine
-        rounds[-1].append(name)
+        runs_[-1].append(name)
         seen |= covered[name]
+    rounds: list[list[str]] = []
+    vials: list[set] = []                        # each round's vials
+    for run in runs_:
+        mine = set().union(*(covered[n] for n in run))
+        i = next((k for k, v in enumerate(vials) if not v & mine), len(rounds))
+        if i == len(rounds):
+            rounds.append([])
+            vials.append(set())
+        rounds[i] += run
+        vials[i] |= mine
     round_of = {n: i for i, r in enumerate(rounds) for n in r}
     # each of two rounds counting an animal the other did not: the signature of a file
     # missing from one and the others placed on the next animal (a partial recount is not)
@@ -2861,6 +2875,18 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
                                                       "1:3": ["2", "GB"]})], carry_fixes(st, rn)
     st.sources[1].slotmap.update(carry_fixes(st, rn)[0][3])
     assert carry_fixes(st, rn) == [], "once placed the same way, nothing left to carry"
+    # round n = each vial's nth pass (260903): animal 1 counted, recounted after a pause, then
+    # animal 2 after another — animal 2's only counting is round 1, not a round 3
+    def cr(h):
+        at = _dt.datetime(2026, 9, 3, h)
+        return hidex.Run(Path(f"c{h}"), "", "", "count", at, at, ["Tc_w"], {}, [hidex.Slot(
+            1, 1, time=at, dead_time=1.0, bq={"Tc_w": 100.0}, cpm={"Tc_w": 5e3},
+            counts={"Tc_w": 5e3})], efficiency={"Tc_w": 0.8})
+    st = Study(animals=[Animal("1"), Animal("2")], tissues=[Tissue("K")],
+               sources=[Source(f"s{h}", f"c{h}", "count", animals=[a], tissues=["K"])
+                        for h, a in ((10, "1"), (12, "1"), (15, "2"))])
+    got = compute(st, {f"c{h}": cr(h) for h in (10, 12, 15)})
+    assert got.rounds == [["c10", "c15"], ["c12"]], got.rounds
     # grouped by molecule: each group where its first animal is, the order kept inside
     st = Study(animals=[Animal("1", molecule="A"), Animal("2", molecule="B"),
                         Animal("3", molecule="A")], group_by="molecule")
