@@ -18,6 +18,8 @@ No admin rights, no PATH or registry changes.
    the same way) and puts a **BioDist** shortcut on the Desktop; later starts are quick.
    `BioDist.bat private` the first time keeps everything in `C:\Users\Public\BioDist`
    instead; `BIODIST_RUNTIME` sets another place.
+   To pin it to the taskbar: right-click its taskbar button while it runs (or its Start
+   menu entry, which it keeps up to date) ▸ *Pin to taskbar*.
 
 `uninstall.bat` takes it all away again. Your options stay in `biodist_options.json` beside
 `BioDist.bat` — copy it to take them to another PC.
