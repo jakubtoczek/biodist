@@ -14,7 +14,7 @@ from pathlib import Path
 from . import __version__
 from . import study as _study
 from .study import (
-    ARRIVE_NEEDED, EVENT_NEEDED, KIND_LABEL, PRESET_LABEL, Result, Study, arrive_gaps,
+    ARRIVE_NEEDED, BASES, EVENT_NEEDED, KIND_LABEL, PRESET_LABEL, Result, Study, arrive_gaps,
     at_imaging, at_injection, event_text, half_life_s, imaging_label, life_dates, recovery_pct,
     time_text,
 )
@@ -31,7 +31,8 @@ SECTIONS = [
 ]
 # the tissue-value units; SUV here is body-weight SUV, (Bq/g) / (injected Bq / body g): g/g
 VALUE_UNITS = [("pid_g", "%IA/g"), ("pid", "%IA"), ("suv", "SUV (g/g)"),
-               ("mbq", "MBq"), ("bq_g", "Bq/g"), ("mass", "mass (g)"), ("mass_mg", "mass (mg)")]
+               ("mbq", "MBq"), ("kbq", "kBq"), ("bq_g", "Bq/g"), ("kbq_g", "kBq/g"),
+               ("mass", "mass (g)"), ("mass_mg", "mass (mg)")]
 LAYOUTS = [("tissues", "tissues down, animals across"), ("animals", "animals down"),
            ("list", "comma list, a line per tissue")]
 # each section's options: key -> [(option, kind, label, choices, default)]; "multi" = ticks
@@ -106,7 +107,8 @@ def title(spec) -> str:
         return dict(SECTIONS)[spec["key"]]
     u = spec.get("unit", "pid_g")
     return {"mass": "Tissue masses (g)", "mass_mg": "Tissue masses (mg)",
-            "mbq": "Activity in the tissues (MBq)",
+            "mbq": "Activity in the tissues (MBq)", "kbq": "Activity in the tissues (kBq)",
+            "kbq_g": "Activity concentration (kBq/g)",
             "bq_g": "Activity concentration (Bq/g)"}.get(u, f"Tissue uptake, {dict(VALUE_UNITS)[u]}")
 
 
@@ -241,10 +243,13 @@ def _bounds(lo, hi, unit) -> str:
 def _choice(study: Study, res: Result, runs) -> list:
     w = study.window or ("auto: widest if one isotope, else the photopeak"
                          if study.window_rule == "wide" else "auto: the photopeak")
-    basis = "CPM" if study.min_basis == "cpm" else "counts"
-    target = (f"≥ {study.min_counts:g} {basis}, dead time ≤ {study.dt_max:g}"
-              + (f", CPM ≤ {study.cpm_max:g}" if study.cpm_max else ""))
-    valid = f"≥ {study.valid_counts:g} {basis}, dead time ≤ {study.valid_dt:g}"
+    basis, top = BASES.get(study.min_basis, ""), BASES.get(study.max_basis, "")
+    target = (f"≥ {study.min_counts:g} {basis}" + (f", ≤ {study.cpm_max:g} {top}"
+                                                   if study.cpm_max else "")
+              + f", dead time ≤ {study.dt_max:g}")
+    valid = (f"≥ {study.valid_counts:g} {basis}" + (f", ≤ {study.valid_max:g} {top}"
+                                                    if study.valid_max else "")
+             + f", dead time ≤ {study.valid_dt:g}")
     both = "their mean" if study.combine != "weighted" else "weighted by their counts"
     pick = {"first": "the first counting in range", "last": "the last counting in range",
             "all": f"every counting in range, {both}",
@@ -261,6 +266,8 @@ def _choice(study: Study, res: Result, runs) -> list:
                                                if s.kind in ("count", "weigh_count")
                                                and s.path in runs
                                                and (x := study.window_for(runs[s.path]))}))],
+            ["activity typed by hand (dose calibrator)", "wins over the counter"
+             if study.pick_bq != "files" else "not used: the counter only"],
             ["vial counted more than once", pick],
             ["several countings chosen for a cell", both],
             ["expected per tissue (flags)", "; ".join(
@@ -274,7 +281,7 @@ def _choice(study: Study, res: Result, runs) -> list:
                 f"{study.mass_tol_mg:g} mg or {study.mass_tol_pct:g} %) left out first"
                 if study.mass_agree else "")],
             ["mass", ("typed by hand wins over the tubes" if study.pick_mass != "files"
-                      else "tube weights only")
+                      else "typed by hand not used: the tubes only")
              + ({"scale": "; weighings scaled by their control tubes",
                  "offset": "; weighings corrected by their control tubes' change"}.get(
                      {True: "scale"}.get(study.drift_fix, study.drift_fix), ""))],

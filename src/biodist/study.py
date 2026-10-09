@@ -663,12 +663,17 @@ DT_WARN = 1.1            # dead-time factor above which a counting is out of the
 DT_BEFORE = 1.5          # ... in a study saved before 2026.10.6.2 that does not say
 DT_VALID = 1.5           # ... past which it is not valid: flagged, used only if no other is
 MIN_COUNTS = 10000       # a counting aimed at (±1 %); fewer is still taken when it is all there is
-VALID_COUNTS = 1000      # ... under which it is not valid (±3 %)
+VALID_COUNTS = 500       # ... under which it is not valid: ±8 % in the wide window, its
+#                          background ~180 counts — misc/extra/261008_validity_threshold.md
+BASES = {"counts": "counts", "cpm": "CPM", "bq": "Bq", "kbq": "kBq", "mbq": "MBq"}   # ranges in
 BLANK_COUNTS = 1000      # a blank vial counting this many is not empty (background: 100-600)
 RECOUNT_COUNTS = 1000    # vials compared to tell a recount (±3 %, under its 10 % test)
 TUBE_OUT_G = 0.5         # a filled weighing this much under its empty: a tube taken out
-DRIFT_MODES = {"": "off", "scale": "scale: each tube by the control tubes' ratio",
-               "offset": "offset: each tube minus the control tubes' change"}
+ROUND_GAP = _dt.timedelta(minutes=20)   # a pause this long between count files: a new round
+#                          (261007: files 1 min apart, 44 min between the two rounds)
+DRIFT_MODES = {"": "off — as weighed",
+               "scale": "by the control tubes: each tube by their ratio",
+               "offset": "by the control tubes: each tube minus their change (mg)"}
 
 
 # --------------------------------------------------------------------------- model
@@ -822,7 +827,7 @@ class Cell:
 
     def spread_pct(self, study: "Study") -> float | None:
         """Largest disagreement between the valid repeat counts of this vial, in percent."""
-        vals = [x[1] for x in self.alts if x[1] > 0 and is_valid(x, study)]
+        vals = [x[1] for x in self.alts if x[1] > 0 and is_valid(x, study, x[6])]
         if len(vals) < 2:
             return None
         return (max(vals) - min(vals)) / min(vals) * 100.0
@@ -839,8 +844,10 @@ class Study:
     window: str = ""                             # short window label; "" = by window_rule
     window_rule: str = "wide"                    # one isotope: widest window, else its peak
     min_counts: float = MIN_COUNTS               # the target range: this many counts, …
-    min_basis: str = "counts"                    # ... counts or cpm (the validity's too)
-    valid_counts: float = VALID_COUNTS           # valid: this many at least, and a dead time …
+    min_basis: str = "counts"                    # ... in BASES (the validity's too)
+    max_basis: str = "cpm"                       # the ranges' tops in BASES (not counts)
+    valid_counts: float = VALID_COUNTS           # valid: this many at least, at most …
+    valid_max: float = 0                         # … this (0: no bound), a dead time …
     valid_dt: float = DT_VALID                   # … ≤ this — else flagged, and used only when
     #                                              no counting of the vial is valid
     pick_count: str = "first"                    # first | last | auto (most counts) | all
@@ -852,9 +859,11 @@ class Study:
     count_tol_pct: float = 3.0                   # two countings agree within this % …
     count_tol_sigma: float = 3.0                 # … or this many σ of their counting statistics
     dt_max: float = DT_WARN                      # … dead time ≤ this,
-    cpm_max: float = 0                           # CPM ≤ this (0: no bound)
+    cpm_max: float = 0                           # ≤ this in max_basis (0: no bound)
     combine: str = "weighted"                    # several countings: weighted (by counts) | mean
     pick_mass: str = "auto"                      # auto (typed wins) | files
+    pick_bq: str = "auto"                        # the same for an activity typed (dose
+    #                                              calibrator): auto (wins) | files (counter only)
     mass_rule: str = "first"                     # a tube weighed more than once: first (the
     #             day-of weighing) | last | mean | median — of those that agree, if mass_agree
     mass_agree: bool = True                      # a weighing out of the consensus is left
@@ -1126,6 +1135,8 @@ class Result:
     rounds: list[list[str]] = field(default_factory=list)   # count files, one pass over the vials
     spans: dict[str, tuple] = field(default_factory=dict)   # file -> (first, last) vial time
     suggest: list[dict] = field(default_factory=list)   # findings with a fix to offer
+    drift: dict[str, tuple] = field(default_factory=dict)   # weighing file -> its control
+    #                                    tubes' change against the tares (mg, %, corrected?)
     refs: dict[str, _dt.datetime] = field(default_factory=dict)   # animal -> the instant its
     #                                    Bq are shown at (its injection, or `ref`)
     hls: dict[str, float] = field(default_factory=dict)          # animal -> half-life (s)
@@ -1180,8 +1191,10 @@ class Result:
         labs = [self.weighing_label(n, kinds.get(n, "")) for n in c.mass_used if n in kinds]
         if not labs:
             return ""
-        tare = " − tare" if any(kinds[n] in ("filled", "total") for n in c.mass_used
-                                if n in kinds) else ""
+        tare = (" − tare" if any(kinds[n] in ("filled", "total") for n in c.mass_used
+                                 if n in kinds) else "") + (
+            " (corrected)" if any(self.drift.get(n, (0, 0, False))[2] for n in c.mass_used)
+            else "")
         if len(labs) == 1:
             return labs[0] + tare
         return f"{c.mass_src.split(' of ')[0]} of " + ", ".join(
@@ -1191,6 +1204,9 @@ class Result:
               mass: float | None = None) -> float | None:
         """One number for the results grid. Returns None when the inputs are not there.
         `bq` / `mass` given: what the cell would read with them instead."""
+        if unit in _SCALE:                       # kBq, MBq, kBq/g, MBq/g: Bq scaled
+            v = self.value(study, aid, tissue, _SCALE[unit][0], bq, mass)
+            return None if v is None else v / _SCALE[unit][1]
         c = self.cell(aid, tissue)
         if bq is not None or mass is not None:
             c = Cell(mass_g=c.mass_g if mass is None else mass, bq=c.bq if bq is None else bq,
@@ -1226,10 +1242,14 @@ class Result:
 
 
 UNITS = [("pid_g", "%IA/g"), ("pid", "%IA"), ("suv", "SUV"),
-         ("bq_g", "Bq/g"), ("bq", "Bq"), ("mass", "mass (g)"), ("mass_mg", "mass (mg)"),
-         ("counts", "counts"), ("cpm", "CPM"), ("dt", "dead time")]
-DIGITS = {"pid_g": 2, "pid": 2, "suv": 2, "bq_g": 0, "bq": 0, "mass": 4, "mass_mg": 1,
-          "mbq": 4, "counts": 0, "cpm": 0, "dt": 3}     # decimals shown, per unit
+         ("bq_g", "Bq/g"), ("kbq_g", "kBq/g"), ("mbq_g", "MBq/g"),
+         ("bq", "Bq"), ("kbq", "kBq"), ("mbq", "MBq"), ("mass", "mass (g)"),
+         ("mass_mg", "mass (mg)"), ("counts", "counts"), ("cpm", "CPM"), ("dt", "dead time")]
+DIGITS = {"pid_g": 2, "pid": 2, "suv": 2, "bq_g": 0, "kbq_g": 2, "mbq_g": 4, "bq": 0,
+          "kbq": 2, "mbq": 4, "mass": 4, "mass_mg": 1, "counts": 0, "cpm": 0,
+          "dt": 3}                                       # decimals shown, per unit
+_SCALE = {"kbq": ("bq", 1e3), "mbq": ("bq", 1e6), "kbq_g": ("bq_g", 1e3),
+          "mbq_g": ("bq_g", 1e6)}
 
 
 def _fingerprint(d: dict) -> str:
@@ -1309,8 +1329,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         if tn not in blanks or not c.empties:
             continue
         e = c.empties[-1][1]
-        for name, g, kind in c.fulls:
-            if kind == "filled" and abs(g - e) < 0.005:     # beyond that: not the same tube
+        for name, g, kind in c.fulls:                # each weighing against the tares
+            if kind in ("filled", "total") and abs(g - e) < 0.005:   # beyond: another tube
                 ratios.setdefault(name, []).append(g / e)
                 shifts.setdefault(name, []).append(g - e)
             elif kind == "filled" and g - e >= 0.005:
@@ -1330,12 +1350,14 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                       f"{max(x[1] for x in moved):+.1f} mg in {len(moved)} files (" + ", ".join(
                           f"{_stem(n)[-15:]} {mg:+.1f} mg, {pct:+.3f} %" for n, mg, pct in moved)
                       + ")") + " against their empty weighing — " + (
-                          "every tube corrected by them" if mode else
-                          "balance drift? Results ▸ side panel ▸ control tubes"))
+                          "every tube of those files corrected by them" if mode else
+                          "the balance off? Options › Results ▸ Weighing correction"))
     if mode:
         for c in cells.values():
             c.fulls = [(n, (g / drift[n] if mode == "scale" else g - shift[n])
-                        if k == "filled" and n in drift else g, k) for n, g, k in c.fulls]
+                        if k in ("filled", "total") and n in drift else g, k)
+                       for n, g, k in c.fulls]
+    drift_of = {n: (shift[n] * 1000, (drift[n] - 1) * 100, bool(mode)) for n in drift}
 
     # ---- activities from file sources, every one corrected to `ref`
     covered: dict[str, set] = {}                 # count file -> the cells it counted
@@ -1365,9 +1387,9 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                 cell(key).raw[Path(s.path).name] = (slot.counts.get(w), slot.cpm.get(w))
                 continue
             bq = decay(slot.bq[w] if own else slot.cpm[w] / 60 / eff, t_from, ref, hl)
-            stat = (slot.cpm if study.min_basis == "cpm" else slot.counts).get(w)
-            cell(key).alts.append((Path(s.path).name, bq, slot.dead_time, stat, slot.time,
-                                   rsd(slot, w)))
+            cell(key).alts.append((Path(s.path).name, bq, slot.dead_time,
+                                   size(slot, w, eff, study.min_basis), slot.time, rsd(slot, w),
+                                   size(slot, w, eff, study.max_basis)))
             cell(key).raw[Path(s.path).name] = (slot.counts.get(w), slot.cpm.get(w))
             covered.setdefault(Path(s.path).name, set()).add(key)
             if slot.time:
@@ -1383,9 +1405,9 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                         Path(s.path).name, decay(slot.bq[x] if own2 else slot.cpm[x] / 60 / e2,
                                                  (run.normalized_to if own2 else None)
                                                  or slot.time, ref, hl),
-                        slot.dead_time, (slot.cpm if study.min_basis == "cpm" else
-                                         slot.counts).get(x), slot.time, short, slot.cpm.get(x),
-                        x == w, slot.counts.get(x), rsd(slot, x)))
+                        slot.dead_time, size(slot, x, e2, study.min_basis), slot.time, short,
+                        slot.cpm.get(x), x == w, slot.counts.get(x), rsd(slot, x),
+                        size(slot, x, e2, study.max_basis)))
 
     for k, files in no_eff.items():
         counter, w = k.split("|", 1)
@@ -1398,24 +1420,39 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                      "Data sources ▸ efficiencies")
 
     # ---- counting rounds: the count files in time order, a new round whenever a vial comes
-    # back — one round is one pass of the counter over the vials
+    # back or after a pause — one round is one pass of the counter over the vials
     rounds: list[list[str]] = []
     seen: set = set()
+    end, kept = None, set()                      # kept: the round's tissue batches
     for name in sorted(covered, key=lambda n: spans.get(n, (_dt.datetime.max,))[0]):
-        if not rounds or covered[name] & seen:
-            rounds.append([])
-            seen = set()
+        t0, t1 = spans.get(name, (None, None))
+        mine = {t.batch for _, tn in covered[name] if (t := study.tissue(tn))}
+        if not rounds or covered[name] & seen or (end and t0 and t0 - end > ROUND_GAP
+                                                  and mine & kept):
+            rounds.append([])                    # a vial back, or a pause in a batch
+            seen, kept = set(), set()
+        end, kept = t1 or end, kept | mine
         rounds[-1].append(name)
         seen |= covered[name]
     round_of = {n: i for i, r in enumerate(rounds) for n in r}
+    # each of two rounds counting an animal the other did not: the signature of a file
+    # missing from one and the others placed on the next animal (a partial recount is not)
+    who = [{a for n in r for a, _ in covered[n]} for r in rounds]
+    for i, j in itertools.combinations(range(len(rounds)), 2):
+        if (x := who[i] - who[j]) and (y := who[j] - who[i]):
+            notes.append(f"round {i + 1} counted {', '.join(sorted(x))} and not "
+                         f"{', '.join(sorted(y))}, round {j + 1} the other way round — a file "
+                         f"missing from a round, and the others on the wrong animals? Check "
+                         f"each count file's animal (Data sources)")
 
     # ---- a blank's vial that reads background in one round and hot in another held something
     # else that time (260930: the tails, counted later in the bare-vial slot): not the blank's
     blanks_now = {t.name for t in study.tissues if t.role == "blank"}
     foreign: dict[str, list[str]] = {}
     for (aid, tn), c in cells.items():
-        quiet = [x for x in c.alts if (x[3] or 0) < BLANK_COUNTS]
-        hot = [x[0] for x in c.alts if (x[3] or 0) >= BLANK_COUNTS]
+        n = {x[0]: c.raw.get(x[0], (0,))[0] or 0 for x in c.alts}    # counts as counted
+        quiet = [x for x in c.alts if n[x[0]] < BLANK_COUNTS]
+        hot = [x[0] for x in c.alts if n[x[0]] >= BLANK_COUNTS]
         if tn in blanks_now and quiet and hot:
             c.alts = [x for x in c.alts if x[0] not in hot]
             c.fulls = [x for x in c.fulls if x[0] not in hot]
@@ -1435,11 +1472,11 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
     # the target range: the rule among the valid ones; none valid: the nearest to valid —
     # the lowest dead time among those with enough counts, else the most counts.
     def valid(c):
-        return [x for x in c.alts if is_valid(x, study)]
+        return [x for x in c.alts if is_valid(x, study, x[6])]
 
     def in_target(c, x):
         return ((x[2] or 1.0) <= study.dt_max and (x[3] is None or x[3] >= study.min_counts)
-                and not (study.cpm_max and (c.raw.get(x[0], (0, 0))[1] or 0) > study.cpm_max))
+                and not (study.cpm_max and (x[6] or 0) > study.cpm_max))
 
     def rank(x):
         n = x[3] if x[3] is not None else math.inf
@@ -1558,7 +1595,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                          "from handling), or tubes weighed cold? Results ▸ select the cells ▸ "
                          "Mass ▸ the later weighing")
 
-    # ---- an activity read on the dose calibrator wins over the counter
+    # ---- an activity read on the dose calibrator wins over the counter (unless the rule says
+    # counter only: then it is there to be picked, as a typed mass is)
     for m in study.manual:
         t = study.tissue(m.tissue)
         if not m.animal or not m.tissue or m.mbq is None or (t and "activity" in t.closed):
@@ -1572,8 +1610,10 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
             if inj and t < inj:
                 notes.append(f"{m.animal}/{m.tissue}: dose calibrator read at {t:%d %b %H:%M}, "
                              f"before the injection — another day? type the date too")
-            c.calib = c.bq = decay(m.mbq * 1e6, t, ref, study.hl_for(m.animal))
-            c.bq_src, c.dead_time, c.bq_used = "dose calibrator", None, ["dose calibrator"]
+            c.calib = decay(m.mbq * 1e6, t, ref, study.hl_for(m.animal))
+            if study.pick_bq != "files":
+                c.bq, c.bq_src, c.dead_time, c.bq_used = c.calib, "dose calibrator", None, \
+                    ["dose calibrator"]
 
     # ---- countings picked by hand for some cells beat every rule: one, or several combined
     for (aid, tis, what), srcs in picked.items():
@@ -1662,7 +1702,11 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
             c.flags.append(f"dead time {c.dead_time:.2f}")
         if c.bq_src != "dose calibrator" and c.counts is not None and \
                 c.counts < study.valid_counts and (not t or t.role != "blank"):
-            c.flags.append(f"low counts: {c.counts:,.0f} {study.min_basis}")
+            c.flags.append(f"low counts: {c.counts:,.4g} {BASES.get(study.min_basis, '')}")
+        u = next((x for x in c.alts if x[0] == c.bq_src), None)
+        if study.valid_max and u and (u[6] or 0) > study.valid_max:
+            c.flags.append(f"over the valid range: {u[6]:,.4g} "
+                           f"{BASES.get(study.max_basis, '')}")
         c.pairs = pairs_of(c, study, namer(c))
         used = [("count", *(u.rsplit("@", 1) if "@" in u else (u, c.rule_w.get(u, ""))))
                 for u in c.bq_used]
@@ -1684,7 +1728,7 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                   refs=refs, hls={a.id: study.hl_for(a.id) for a in study.animals},
                   rounds=rounds, spans=spans,
                   files={Path(s.path).name: (s.kind, runs[s.path].started) for s in live
-                         if s.path in runs}, no_eff=list(no_eff))
+                         if s.path in runs}, no_eff=list(no_eff), drift=drift_of)
     range_flags(study, res, study.ranges)
     return res
 
@@ -1723,10 +1767,22 @@ def agree(a: float, b: float, study: Study) -> bool:
     return d <= study.mass_tol_mg or d <= study.mass_tol_pct / 100 * 1000 * min(abs(a), abs(b))
 
 
-def is_valid(x: tuple, study: Study) -> bool:
-    """A counting (src, Bq, dead time, counts or CPM, …) enough counted and not too busy to
-    be taken: else flagged, and used only when no other counting of the vial is valid."""
-    return (x[2] or 1.0) <= study.valid_dt and (x[3] is None or x[3] >= study.valid_counts)
+def is_valid(x: tuple, study: Study, top: float | None = None) -> bool:
+    """A counting (src, Bq, dead time, its size in min_basis, …) enough counted and not too
+    busy to be taken — `top` its size in max_basis, under the valid top: else flagged, and
+    used only when no other counting of the vial is valid."""
+    return ((x[2] or 1.0) <= study.valid_dt and (x[3] is None or x[3] >= study.valid_counts)
+            and not (study.valid_max and (top or 0) > study.valid_max))
+
+
+def size(slot: hidex.Slot, w: str, eff: float | None, unit: str) -> float | None:
+    """A counting's size in `unit` (BASES): counts or CPM as read, else the activity in the
+    vial while it was counted — CPM / 60 / efficiency, in Bq, kBq or MBq."""
+    if unit in ("counts", "cpm"):
+        return (slot.counts if unit == "counts" else slot.cpm).get(w)
+    cpm = slot.cpm.get(w)
+    return None if cpm is None or not eff else \
+        cpm / 60 / eff / {"bq": 1, "kbq": 1e3, "mbq": 1e6}.get(unit, 1)
 
 
 def rsd(slot: hidex.Slot, w: str) -> float | None:
@@ -1795,7 +1851,7 @@ def pairs_of(c: Cell, study: Study, name=None) -> dict[tuple, list[str]]:
                         for x, y in ((a, b), (b, a)):
                             if key(x) not in cons:
                                 out.setdefault(key(x), []).append(gap(x, y))
-    xs = [y for y in c.every if is_valid(y, study) and y[1] > 0]
+    xs = [y for y in c.every if is_valid(y, study, y[10]) and y[1] > 0]
 
     def cgap(a, b):
         pct, z = count_gap(b[1], b[9], a[1], a[9])   # a against b
@@ -2020,7 +2076,9 @@ def _match_racks(blocks) -> list[tuple[int, int]]:
 def _recount_of(study: Study, run: hidex.Run, earlier: list[hidex.Run]) -> hidex.Run | None:
     """The earlier run these same vials were counted in: once decayed to the same instant,
     a recount agrees vial by vial within a few % (dead time, statistics) while two animals
-    of one group differ by tens of %."""
+    of one group differ by tens of % — mostly: late, at low counts, two alike animals can
+    come under the 10 % too (260930 round 3, animals 5 and 6), so the closest one is taken,
+    not the first."""
     w = study.window_for(run)
     hl = run.half_life_s.get(w) or HALF_LIFE_S["99mTc"]
 
@@ -2028,7 +2086,8 @@ def _recount_of(study: Study, run: hidex.Run, earlier: list[hidex.Run]) -> hidex
         if r.normalized_to:
             return decay(s.bq[x], r.normalized_to, at, hl) if s.bq.get(x, 0) > 0 else None
         return decay(s.cpm[x], s.time, at, hl) if s.cpm.get(x, 0) > 0 and s.time else None
-    for e in earlier:
+    best = []
+    for k, e in enumerate(earlier):
         we = study.window_for(e)
         if (len(e.slots) != len(run.slots) or not w or not we or not e.started
                 or (e.normalized_to is None) != (run.normalized_to is None)):
@@ -2038,8 +2097,8 @@ def _recount_of(study: Study, run: hidex.Run, earlier: list[hidex.Run]) -> hidex
                  if min(x.counts.get(we, 0), y.counts.get(w, 0)) >= RECOUNT_COUNTS]
         lr = [abs(math.log(b / a)) for a, b in pairs if a and b]
         if len(lr) >= 3 and statistics.median(lr) < 0.1:
-            return e
-    return None
+            best.append((statistics.median(lr), k, e))
+    return min(best, key=lambda x: x[:2])[2] if best else None
 
 
 def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = None) -> list[str]:
@@ -2072,7 +2131,7 @@ def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = Non
             s.batch = min(batches, key=lambda b: (nv % len(batches[b]) != 0,
                                                   nv % len(batches[b]), -len(batches[b])))
 
-    def deal(todo, kinds):
+    def deal(todo, kinds, how="in time order"):
         for b, names in batches.items():
             mine = [s for s in todo if s.batch == b]
             if not mine:
@@ -2092,8 +2151,12 @@ def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = Non
                     cells = [(a, t) for t in names for a in who + [None] * (n_an - len(who))]
                 want = {sl.key: c for sl, c in zip(run.slots, cells) if c[0]}
                 why[s.uid] = (f"{KIND_LABEL[s.kind]} file {mine.index(s) + 1} of {len(mine)} "
-                              f"in time order → {', '.join(who) or 'no animal left'}")
-                if len(want) < len(run.slots) and s is mine[-1]:
+                              f"{how} → {', '.join(who) or 'no animal left'}")
+                if not who:
+                    notes.append(f"{Path(s.path).name}: no animal left for it — more files of "
+                                 f"other vials than animals (another study's file? an animal "
+                                 f"missing?): placed nowhere")
+                elif len(want) < len(run.slots) and s is mine[-1]:
                     notes.append(f"{Path(s.path).name}: {len(run.slots) - len(want)} vial(s) "
                                  f"left over — more vials than animals x tissues")
                 _place(s, run, want, names, TISSUE_MAJOR if tm else ANIMAL_MAJOR)
@@ -2113,9 +2176,10 @@ def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = Non
         if s.auto:
             if any(owner[j][0] is s for _, j in pairs):
                 s.kind = "filled"
-            else:          # matched nothing: empty tubes, as when dropped (261007: a kind
-                s.kind = "empty"   # guessed "filled" before stayed, Guess again kept it)
-                if pairs and not any(o.kind == "weigh_count" and len(runs[o.path].slots)
+            else:          # empty tubes, as when dropped (261007: a kind guessed "filled"
+                s.kind = "empty"   # before stayed, Guess again kept it) — matched or not
+                if pairs and not any(owner[i][0] is s for i, _ in pairs) and \
+                        not any(o.kind == "weigh_count" and len(runs[o.path].slots)
                                      == len(runs[s.path].slots) for o in srcs):
                     # ponytail: a same-size count + weight run is taken for its filled side
                     notes.append(f"{Path(s.path).name}: no rack matches another weighing by "
@@ -2165,21 +2229,48 @@ def auto_assign(study: Study, runs: dict[str, hidex.Run], why: dict | None = Non
                              f" g lighter than its empty tube ({Path(owner[i][0].path).name}) — a "
                              f"tube taken out? the rack is matched on its other tubes")
 
-    # ---- counts: in animal order, a recount goes where its first count went
-    fresh, seen = [], []
-    for s in (s for s in srcs if s.kind in ("count", "weigh_count")):
-        run = runs[s.path]
-        first = _recount_of(study, run, [runs[o.path] for o in seen])
-        if s.auto and first:
-            orig = next(o for o in seen if runs[o.path] is first)
-            s.batch = orig.batch
-            _place(s, run, orig.mapping(first), batches.get(s.batch, []), orig.preset)
-            why[s.uid] = (f"a recount of {first.name}: the same activities vial by vial, "
-                          "once decayed to the same time")
-        elif s.auto:
-            fresh.append(s)
-            deal(fresh, ("count", "weigh_count"))
-        seen.append(s)
+    # ---- counts. A file reading an earlier one's activities vial by vial is a recount of
+    # the same vials: one chain. The chains are dealt to the animals in the order the rounds
+    # count them — a round ends when a vial comes back, or at a pause (`ROUND_GAP`); the
+    # fullest round sets the order and the others fit in, so a file missing from a round
+    # (261007: round 1 without animal 1's) shifts no animal. A chain with a file placed by
+    # hand goes where that file is.
+    counts = [s for s in srcs if s.kind in ("count", "weigh_count")]
+    head: dict[str, Source] = {}
+    for i, s in enumerate(counts):
+        first = _recount_of(study, runs[s.path], [runs[o.path] for o in counts[:i]])
+        head[s.uid] = head[next(o for o in counts[:i] if runs[o.path] is first).uid] \
+            if first else s
+    passes: list[list[Source]] = []
+    end = None
+    for s in counts:
+        r = runs[s.path]
+        if not passes or head[s.uid] in passes[-1] or (
+                end and r.started and r.started - end > ROUND_GAP
+                and any(h.batch == head[s.uid].batch for h in passes[-1])):
+            passes.append([])
+        passes[-1].append(head[s.uid])
+        end = max((x.time for x in r.slots if x.time), default=r.started)
+    order: list[Source] = []
+    for p in sorted(passes, key=len, reverse=True):          # the fullest, then in time order
+        for i, h in enumerate(p):
+            if h not in order:                   # just before the next one this pass shares
+                nxt = next((x for x in p[i + 1:] if x in order), None)
+                order.insert(order.index(nxt) if nxt else len(order), h)
+    fixed = {}                                   # chain -> its file placed by hand
+    for s in counts:
+        if not s.auto:
+            fixed.setdefault(head[s.uid].uid, s)
+    deal([h for h in order if h.auto and h.uid not in fixed], ("count", "weigh_count"),
+         "in round order")
+    for s in counts:
+        src = fixed.get(head[s.uid].uid, head[s.uid])
+        if s.auto and s is not src:
+            s.batch = src.batch
+            _place(s, runs[s.path], src.mapping(runs[src.path]), batches.get(s.batch, []),
+                   src.preset)
+            why[s.uid] = (f"a recount of {Path(src.path).name}: the same activities vial by "
+                          "vial, once decayed to the same time")
     return notes
 
 
@@ -2209,6 +2300,23 @@ def unplaced(study: Study, runs: dict[str, hidex.Run]) -> list[str]:
                 out.append(f"{a.label}: {', '.join(miss[:6])}{' …' if len(miss) > 6 else ''} "
                            f"weighed {'empty only' if miss[0] in e else 'filled only'} — "
                            f"no mass for {'it' if len(miss) == 1 else 'them'}")
+    # two count files reading the same activities vial by vial counted the same vials: they
+    # must be placed alike (a recount put on another animal by hand, or a shifted round)
+    cs = sorted((s for s in study.sources if s.kind in ("count", "weigh_count")
+                 and s.path in runs), key=lambda s: runs[s.path].started or _dt.datetime.min)
+    for i, b in enumerate(cs):
+        rb, mb = runs[b.path], b.mapping(runs[b.path])
+        first = _recount_of(study, rb, [runs[x.path] for x in cs[:i]])   # the closest one
+        for a in [x for x in cs[:i] if runs[x.path] is first]:
+            ma = a.mapping(runs[a.path])
+            off = [(x.key, ma[x.key], mb[y.key]) for x, y in zip(runs[a.path].slots, rb.slots)
+                   if x.key in ma and y.key in mb and ma[x.key] != mb[y.key]]
+            if off:
+                k, p, q = off[0]
+                out.append(f"{Path(b.path).name} reads the same activities as "
+                           f"{Path(a.path).name}, vial by vial — the same vials, but placed "
+                           f"differently ({len(off)} vial(s); {k}: {'/'.join(p)} vs "
+                           f"{'/'.join(q)}): one of them on the wrong animal?")
     return out
 
 
@@ -2488,6 +2596,12 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     # the dose calibrator supplies what the counter could not
     assert res.cell("107", "Kidneys").bq_src == "dose calibrator"
     assert abs(pidg("Kidneys") - 143.2) < 0.5, pidg("Kidneys")
+    s.pick_bq = "files"                                  # counter only: the reading stays pickable
+    k = compute(s).cell("107", "Kidneys")
+    assert k.bq_src != "dose calibrator" and k.calib == res.cell("107", "Kidneys").calib, k.bq_src
+    s.chosen = [["107", "Kidneys", "count", "dose calibrator"]]
+    assert compute(s).cell("107", "Kidneys").bq_src == "dose calibrator"
+    s.pick_bq, s.chosen = "auto", []
     assert abs(pidg("Blood") - 0.28) < 0.01, pidg("Blood")
     assert abs(pidg("Thyr") - 2.55) < 0.02, pidg("Thyr")
     assert abs(recovery_pct(s, res, "107") - 39.9) < 0.5, recovery_pct(s, res, "107")
@@ -2910,10 +3024,12 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     thin = hidex.Slot(1, 3, secs=30, dead_time=1.0, counts={"w": 219}, cpm={"w": 115})
     assert abs(rsd(thin, "w") - math.sqrt(219) / 57.5) < 1e-9
     assert counts_agree(0.836, 0.03, 0.570, rsd(thin, "w"), Study())
-    gb = Cell(every=[("r1", 0.836, 1.0, 3545, None, "w", 3545, True, 1944, 0.03),
-                     ("r3", 0.570, 1.0, 115, None, "w", 115, True, 219, 0.03)])
-    assert not pairs_of(gb, Study(min_basis="cpm")), "r3 under 1,000 CPM: not valid"
+    gb = Cell(every=[("r1", 0.836, 1.0, 3545, None, "w", 3545, True, 1944, 0.03, 3545),
+                     ("r3", 0.570, 1.0, 115, None, "w", 115, True, 219, 0.03, 115)])
+    assert not pairs_of(gb, Study(min_basis="cpm")), "r3 under 500 CPM: not valid"
     assert pairs_of(gb, Study(min_basis="cpm", valid_counts=100)), "valid, ±3 % each: differ"
+    assert not pairs_of(gb, Study(min_basis="cpm", valid_counts=100, valid_max=1000)), \
+        "r1 over the valid top: not valid either"
     tubes = [("w", 0.0105, 2), ("r2", 0.0084, 1), ("r3", 0.0082, 1)]     # … and agree: r2, r3
     same = lambda a, b: agree(a[1], b[1], Study())                     # noqa: E731
     assert [u[0] for u in agreeing(tubes, same)] == ["r2", "r3"]

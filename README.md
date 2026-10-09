@@ -52,8 +52,9 @@ Tissues down, animals across. **data** picks the unit (%IA/g, %IA, SUV, Bq, mass
 picks the flags that tint a cell; **▤** sets which animals and tissues show, in which order.
 
 Click a cell: the side panel (**sources**) shows its countings and weighings side by side,
-ticked where in use, ⚠ where something looks off (hover for why). Tick another and
-**Apply** to use it for that cell.
+ticked where in use, ⚠ where something looks off (hover for why). Click a row to use it
+alone (Ctrl+click adds or removes one; a counting's energy window is picked in its row),
+then **Apply** to keep it for the selected cells.
 
 **⧉** copies the table (Ctrl+C the selection); **Export…** writes `.xlsx` / `.csv`.
 

@@ -11,7 +11,7 @@ was made. Everything is kept in one study file.
 > the right kind, animals and tissues, and read the log's ✗ and ⚠. A guess that looks
 > right can still be wrong (two racks of tubes that happen to weigh alike, a rack weighed
 > out of turn, a vial left out). The rules that choose among repeated countings and
-> weighings are defaults too: review them for your study (Options › Results).
+> weighings are defaults too: review them for your study (Options › Rules).
 
 - [Features](#features)
 - [A study, step by step](#a-study-step-by-step)
@@ -64,23 +64,27 @@ was made. Everything is kept in one study file.
 - The table shows, for each animal, the mass and activity in use.
 
 **Results**
-- %IA/g, %IA, SUV, Bq/g, Bq, mass (g or mg), counts, CPM, dead time, and where each value
+- %IA/g, %IA, SUV, Bq/g (kBq/g, MBq/g), Bq (kBq, MBq, or MBq/kBq as the tissue table),
+  mass (g or mg), counts, CPM, dead time, and where each value
   comes from.
 - Rows for the injected activity, the activity at the SPECT / PET start, the tail, the body
   weight, the sum of the tissues.
 - Cells tinted by what looks off (no mass, at background, dead time, low counts, measures
   that disagree, out of the expected range).
-- Click a cell: every counting and weighing of it side by side, with its flags; tick another
-  and Apply to use it for that cell.
+- Click a cell: every counting and weighing of it side by side, with its flags; click another
+  (or pick another energy window) and Apply to use it for that cell — or for all the selected.
 - Copy to Excel in one click, export `.xlsx` / `.csv`; choose and rename the animals and
   tissues shown, and their order.
 
 **Rules (how the values are chosen)**
 - Which energy window, which counting when a vial was counted several times, which weighing
   when a tube was weighed several times — saved with the study, so it reproduces.
-- A validity range and a target range for countings (counts, dead time, CPM).
+- A validity range and a target range for countings: a bottom (counts, CPM or the activity
+  in the vial), a top (CPM or activity) and a dead time.
 - Measures that do not agree with the others (the consensus) are flagged, and can be left out.
-- Control tubes can correct a whole weighing for balance drift.
+- Control tubes can correct every weighing after the tares for balance drift.
+- Cross-checks: a count file placed nowhere, rounds that each miss an animal the other
+  counted, two files reading the same vials placed on different animals.
 
 **Report and records**
 - Report sections ticked, ordered, copied: study, data files, animals, ARRIVE check, value
@@ -116,8 +120,9 @@ was made. Everything is kept in one study file.
 
 **Counting**
 
-7. Drop the counting files. Counts follow the animals in time order; a second pass over the
-   same vials is recognised as a recount.
+7. Drop the counting files. A second pass over the same vials is recognised as a recount;
+   the passes (rounds — a pause of 20 min also starts one) are dealt to the animals in round
+   order, so a file missing from one round shifts no animal.
 8. Read the **log**: what each file was taken for and why, and anything that looks wrong.
 
 **Results and report**
@@ -157,7 +162,8 @@ A card per animal. The fields:
 
 **The animal window** (⤢ on a card; the ⤢ beside *Animals* opens every animal at once):
 - *Biodistribution info* (red when empty and needed), *ARRIVE 2.0* (amber when ARRIVE asks
-  for it), *Other*. **copy ▾** copies a field to the other animals; **on card** shows it on
+  for it), *Other*. **copy ▾** copies a field to the other animals (every animal listed, the one copied
+  from greyed); **on card** shows it on
   the card.
 - **+ loss / note**: activity that did not go in (a cotton on the tail…), taken off the
   injected activity; notes on the biodistribution.
@@ -206,7 +212,11 @@ A row per counter file:
   weight; the earlier side of a match is the empty tubes, dealt to the animals in time order;
   a filled run takes the places of the empty run it matched — every rack must match, so two
   runs of empty tubes are never taken for empty + filled. Counts follow the animals in time
-  order; a recount goes where its first counting went. The log says why for each file.
+  order; a recount goes where its first counting went (the closest match, if several), and
+  the chains of recounts are dealt in round order. The log says why for each file. Then the
+  checks: a file placed nowhere, two rounds each missing an animal the other counted (a file
+  missing and the others shifted), two files reading the same vials vial by vial but placed
+  differently.
 - **Unfold a file** (▸): its vials, the animal over the tissue. Type an animal or a tissue
   under a vial to place it; **Tab** fills the rest the same way (Esc drops the proposal).
   BioDist then offers the same fix for that animal's other files.
@@ -231,7 +241,8 @@ tubes that moved), BioDist offers the fix once, ready to apply.
 
 Ctrl+R, or the green *Results* button.
 
-- **data**: %IA/g, %IA, SUV, Bq/g, Bq, mass (g, mg), counts, CPM, dead time, activity
+- **data**: %IA/g, %IA, SUV, Bq/g, kBq/g, MBq/g, Bq, kBq, MBq, MBq or kBq (as the tissue
+  table: its digits by its size, decimals "–"), mass (g, mg), counts, CPM, dead time, activity
   source, mass source. **decimals**: per unit, kept.
 - **show**: rows under the tissues — tail and standards, blanks, injected activity, activity
   in the animal at the SPECT / PET start, tail (%IA), body weight, sum of tissues (%IA).
@@ -240,14 +251,21 @@ Ctrl+R, or the green *Results* button.
 - **⧉** copies the whole table; Ctrl+C the selection; **Export…** (Ctrl+E) `.xlsx` / `.csv`.
 
 **The side panel** (*sources*): click a cell (or select several).
-- **Countings**: a row per counting round and energy window — counts, CPM, kBq at
-  injection, dead time. **Tare** and **weighings**: the tube weights and the tissue mass each
-  gives.
-- Ticks are what is in use; **⚠** where something is off — hover for why: not valid (too
-  few counts, dead time), out of the consensus, disagreeing with another measure.
-- Tick others: the table shows the result at once (green, bold); **Apply** keeps it for those
-  cells (shown in italics after); another cell or closing drops it. **Back to the rules**
-  removes a cell's own choice. **see the rules**: Options › Results.
+- **Countings**: a row per counting round, its energy window picked in the row (the one in
+  use shown) — counts, CPM, kBq at injection, dead time; the dose calibrator when one was
+  typed. **Tare** and **weighings**: the tube weights and the tissue mass each gives.
+- Ticks are what is in use (half-ticked: by some of the selected cells); **⚠** where
+  something is off — hover for why: not valid (too few counts, dead time), out of the
+  consensus, disagreeing with another measure.
+- **Click a row**: each selected cell that has it uses it alone. **Ctrl+click** adds it, or
+  takes it out when ticked. **Another window** in a row: the cells using that counting take it
+  in that window, the others keep theirs (all selected, a kidney read on the dose calibrator
+  stays on it). A cell without that row, or that would not change, keeps what it had.
+- The table shows the result at once (green, bold); **Apply** keeps it for those cells (shown
+  in italics after); another cell or closing drops it. **Back to the rules** removes a cell's
+  own choice. **see the rules**: Options › Rules; Options › Results window: a row per window,
+  or a click that
+  always adds or removes, can be set instead.
 
 ---
 
@@ -286,24 +304,36 @@ Export / Import / Reset to defaults.
 | Procedures | the kinds, and each kind's fields: type (text, list, time · p.i., date · age · D-n), list items, example, shared line, shown when (`modality = SPECT`) |
 | Tissue table | what a cell shows, the units typed in, the line over the table, the recorded tissue lists |
 | Data sources | what shows under a file's vials, how they are laid out, how the guess works |
-| Results | the rules of the study open (below), expected ranges per tissue, decimals |
+| Rules | the rules of the study open (below), expected ranges per tissue |
+| Results window | the units the data list offers, the decimals box, what show / highlight offer and tick, the side panel (a row per counting or per window; what a click does), decimals |
 | Report | the report's sections and format |
 | Study file | keep the counter files' data in the study |
 | Log | what it records; saved per session or appended, where, under which name |
 
-**Options › Results — the rules**, saved with each study (*Make these the defaults* for new
+**Options › Rules**, saved with each study (*Make these the defaults* for new
 studies):
-- **Counting window**: the widest (one isotope) or the photopeak, or one by name.
-- **Valid** countings: enough counts (or CPM) and a dead time not too high — others are
-  flagged and used only when nothing better exists.
-- **Target range**: what the rule prefers among the valid ones.
-- **Vial counted more than once**: the first, the last, the most counts, all combined
-  (weighted by counts, or their mean), one round.
-- **Tube weighed more than once**: the first (day-of), the last, the median, the mean.
-- **Agree within**: % or σ for countings, mg or % for weighings; tick to leave out a measure
-  out of the consensus.
-- **Then**: activities at each injection or one time; typed masses win or not; control-tube
-  correction (scale / offset); tail taken off the injected activity.
+- **Countings**
+  - **Counting window**: the widest (one isotope) or the photopeak, or one by name.
+  - **Typed by hand**: an activity typed in the tissue table (dose calibrator) wins over the
+    counter, or is not used (still in the side panel, to pick for a cell).
+  - **Ranges in**: the bottom of both ranges in counts (the default), CPM, or the activity
+    in the vial as counted (Bq, kBq, MBq); the top in CPM or activity.
+  - **Valid**: enough counts and a dead time not too high — others are flagged and used only
+    when nothing better exists. **Target range**: the same fields, stricter —
+    what the rule prefers among the valid ones.
+  - **Counted more than once**: the first, the last, the most counts, all combined, one round.
+  - **Consensus**: leave out a counting out of it; two agree within a % or σ.
+  - **Several countings**: weighted by their counts, or their mean.
+- **Weighings**
+  - **Typed by hand**: a mass typed in the tissue table (paraffin, parafilm) wins over the
+    tubes, or is not used.
+  - **Weighed more than once**: the first (day-of), the last, the median, the mean.
+  - **Consensus**: leave out a weighing out of it; two agree within mg or %.
+  - **Weighing correction**: every weighing after the tares (filled tubes, count + weight)
+    corrected by its own file's control tubes (scale / offset), or not. The side panel's mass
+    table shows each file's control-tube change (⚖ mg; grey when not applied).
+- **Activities and dose**: activities at each injection or one time; tail taken off the
+  injected activity.
 
 ---
 
@@ -329,7 +359,9 @@ can correct the whole weighing.
 %IA/g = 100 · A_tissue / (A_injected · m)          SUV = (A_tissue / m) / (A_injected / W)
 ```
 
-**Repeat countings.** A counting is **valid** with enough counts (≥ 1,000 by default, ±3 %)
+**Repeat countings.** A counting is **valid** with enough counts (≥ 500 by default: ±8 % in
+the wide window once its background is off, about the limit of quantification —
+`misc/extra/261008_validity_threshold.md`)
 and a dead time ≤ 1.5; the **target range** (≥ 10,000, ±1 %; dead time ≤ 1.1) is what the rule
 picks from. By default the first counting in it is used — one counting, not an average.
 Several combined are weighted by their counts: decay correction scales a value, not how sure

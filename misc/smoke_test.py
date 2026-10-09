@@ -92,8 +92,19 @@ assert len(r._grid()) == 25 + 1 + 5 + 1, len(r._grid())   # + tail, blank, a gap
 assert r._grid()[-1][0] == "sum of tissues (%IA)"
 kidneys = next(row for row in grid if row[0] == "Kidneys")
 assert kidneys[1].startswith("143."), kidneys
-r.c_unit.setCurrentIndex(2)                         # SUV
+r.set_unit("suv")
 assert next(row for row in r._grid() if row[0] == "Kidneys")[1].startswith("28."), "SUV"
+r.set_unit("act")                                    # as the tissue table: its own digits
+assert r.s_digits.text() == "–" and not r.s_digits.isEnabled(), r.s_digits.text()
+assert next(row for row in r._grid() if row[0] == "Kidneys")[1].endswith(" MBq")
+r.set_unit("kbq")
+kid = next(row for row in r._grid() if row[0] == "Kidneys")[1]
+assert r.s_digits.isEnabled() and "." in kid and float(kid.replace(",", "")) > 1000, kid
+PREFS["result_show_menu"] = ["sum"]                  # Options › Results window: the menus
+r._apply_prefs()
+assert r.show_rows["sum"].isVisible() and not r.show_rows["inj"].isVisible()
+PREFS["result_show_menu"] = [k for k, _ in _app.RESULT_ROWS]
+r.set_unit("suv")
 
 # '+' after the cards: next ID in the series, isotope and molecule carried over; Ctrl+Z/Y
 n = len(w.study.animals)
@@ -281,6 +292,16 @@ rt = w._trows.index((w.study.tissues.index(w.study.tissue("Liver")), "time"))
 w.t_tissues.item(rt - 1, TC).setText("0.5")
 w.t_tissues.item(rt, TC).setText("4/9/26 9:00")
 assert w.res.cell("107", "Liver").bq_src == "dose calibrator", w.res.notes
+# a wide cell keeps its values together in the middle; the typed activity and its time sit
+# in the activity's share of the cell, under the activity in use
+rt = w._trows.index((w.study.tissues.index(w.study.tissue("Liver")), "time"))
+d, ix = w.t_tissues.itemDelegate(), w.t_tissues.model().index(rt, TC)
+opt = _app.QStyleOptionViewItem()
+opt.initFrom(w.t_tissues)
+opt.rect = _app.QRect(0, 0, 600, 30)
+blk = d._block(opt, ix)
+assert blk.width() < 600 and abs(blk.center().x() - 300) <= 1, blk
+assert ix.data(_app._SHARE) == (1, 2) and ix.siblingAtRow(rt - 1).data(_app._SHARE) == (1, 2)
 
 # a click under an animal opens a typed row for every animal: a note here
 w._open_typed(w.study.tissue("Heart"), "note", "note", TC)
@@ -329,7 +350,7 @@ assert (_num(1.3, "1.30"), _num(0.577, ".577"), _num(2.0, "")) == ("1.30", "0.57
 # a source's animals and tissues sum up its vials; its run shows when it was measured
 assert w.t_sources.cellWidget(2, 5) is None and w.t_sources.item(2, 5).text(), \
     w.t_sources.item(2, 5).text()
-assert re.fullmatch(r"\d\d \w+ \d\d:\d\d–\d\d:\d\d  ⤢", w.t_sources.item(2, 1).text()), \
+assert re.fullmatch(r"round 1 · \d\d \w+ \d\d:\d\d–\d\d:\d\d  ⤢", w.t_sources.item(2, 1).text()), \
     w.t_sources.item(2, 1).text()
 
 # 260923: the user's study, then its 18 Hidex files dropped at once — the post-collection
@@ -453,11 +474,22 @@ app.processEvents()
 heads = [w.animal_win.sheet.item(r, 0).text() for r in range(w.animal_win.sheet.rowCount())]
 assert "imaging 1 · modality" in heads and "other loss 1 (MBq)" in heads, heads
 r = heads.index("imaging 2 · start")
-w.animal_win.sheet.setCurrentCell(r, len(w.study.animals))
-w.animal_win.sheet.item(r, len(w.study.animals)).setText("13:30")
+w.animal_win.sheet.setCurrentCell(r, len(w.study.animals) + w.animal_win.SC - 1)
+w.animal_win.sheet.item(r, len(w.study.animals) + w.animal_win.SC - 1).setText("13:30")
 app.processEvents()
 assert [e for e in w.study.animals[-1].events if e["kind"] == "imaging"][1]["start"] == "13:30"
 assert w.res.injected_bq["107"] < before_loss, "the loss comes off"
+# the table view: on card and copy per field; copy lists every animal, the source greyed
+sh = w.animal_win.sheet
+rw = next(r for r in range(sh.rowCount()) if sh.item(r, 0).text() == "body weight (g)")
+assert sh.cellWidget(rw, 1).findChild(_app.QCheckBox) is not None
+if len(w.study.animals) > 1:
+    sh.setCurrentCell(rw, w.animal_win.SC + 1)      # the second animal's cell: copied from it
+    menu = sh.cellWidget(rw, 2).menu()
+    menu.aboutToShow.emit()
+    ticks = [x for x in menu.actions() if x.isCheckable()]
+    assert len(ticks) == len(w.study.animals) and not ticks[1].isEnabled() and \
+        ticks[0].isEnabled(), [x.text() for x in ticks]
 w.study.animals[-1].events.clear()
 w.study.animals[0].losses.clear()
 w.animal_win.close()
@@ -465,7 +497,7 @@ w.animal_win.close()
 # Options: a window of its own, exported and imported as JSON
 from biodist.app import _load_prefs, _save_prefs  # noqa: E402
 w.show_options()
-assert w.options_win.pages.count() == w.options_win.topics.count() == 11
+assert w.options_win.pages.count() == w.options_win.topics.count() == 12
 tmp = Path(os.environ.get("TEMP", ".")) / "_biodist_options.json"
 keep = dict(PREFS)
 assert _save_prefs(tmp)
@@ -489,7 +521,7 @@ tmp.unlink(missing_ok=True)
 # Options › Results: the study's rules (Ctrl+Z there is the study's), its expected ranges
 ow = w.options_win
 ow.topics.setCurrentRow([ow.topics.item(i).text() for i in range(ow.topics.count())]
-                        .index("Results"))
+                        .index("Rules"))
 page = ow.pages.currentWidget().widget()            # each page in its scroll area
 assert not w.study.ranges, "no expected range until one is set"
 plus = next(b for b in page.findChildren(QPushButton) if b.text() == "+")
@@ -546,12 +578,15 @@ late = w3.res.round_of("Tc-99m-002-20260904-040117-AutoExport.xlsx")
 there = sorted([a, t, "count", x[0]] for (a, t) in [(a.id, t.name) for a, t in res3._selected()]
                for x in w3.res.cell(a, t).alts if w3.res.round_of(x[0]) == late)
 assert len(there) >= 2, there
-tab, rks, _, _ = res3._ticks["count"]        # a row per round and window, ticked where in use
+tab, rks, _ = res3._ticks["count"]           # a row per round, its window picked in the row
 assert tab.columnCount() == 8 and "of 4 cells" in tab.item(0, 3).text(), tab.item(0, 3).text()
-assert len({rk[4] for rk in rks}) == 2 and tab.item(0, 1).text() == "15-2047", "a keV column"
-assert not res3._b_apply.isEnabled(), "nothing to apply before a tick changes"
-for r, rk in enumerate(rks):                  # the late round, in the rule's window (rk[3] False)
-    tab.item(r, 0).setCheckState(Qt.Checked if rk[1] == late and not rk[3] else Qt.Unchecked)
+assert isinstance(tab.cellWidget(0, 1), QComboBox) and \
+    tab.cellWidget(0, 1).currentText() == "15-2047", "the window, in the row"
+assert not res3._b_apply.isEnabled(), "nothing to apply before a click"
+on_late = {k for k in [(a.id, t.name) for a, t in res3._selected()]
+           if w3.res.round_of(w3.res.cell(*k).bq_src) == late}
+there = [x for x in there if tuple(x[:2]) not in on_late]   # using it already: no pick
+res3._src_click("count", next(r for r, rk in enumerate(rks) if rk[1] == late), add=False)
 app.processEvents()
 app.processEvents()
 assert res3._pending and not w3.study.chosen, "shown in the table, not applied"
@@ -561,67 +596,105 @@ app.processEvents()
 app.processEvents()
 assert sorted(w3.study.chosen) == there, w3.study.chosen     # not on a vial that round missed
 assert all(w3.res.round_of(w3.res.cell(a, t).bq_src) == late for a, t, *_ in there), "picked"
-assert res3.table.item(liver, 1).font().italic(), "a picked cell is italic"
+assert not there or res3.table.item(liver, 1).font().italic() or ("107", "Liver") in on_late, \
+    "a picked cell is italic"
 assert len(res3._selected()) == 4, "the selection survives the recompute"
-# one cell: both countings ticked — weighted by their counts; another cell drops unapplied
-# ticks, and says so
+
+
+def spin():
+    app.processEvents()
+    app.processEvents()
+
+
+def rounds_clicked():
+    """The liver of 107 alone: every round, the first a plain click, the others Ctrl+click."""
+    res3._fill_panel()
+    tab, rks, _ = res3._ticks["count"]
+    assert tab.item(0, 3).text() and tab.item(0, 5).text(), "counts, kBq of the counting"
+    for r, rk in enumerate(rks):
+        if rk[0] == 0:
+            res3._src_click("count", r, add=r > 0)
+            spin()
+    return sum(1 for rk in rks if rk[0] == 0)
+
+
+# one cell: both countings — weighted by their counts; another cell drops unapplied ticks,
+# and says so
 res3.table.clearSelection()
 res3.table.setCurrentCell(liver, 1)
 app.processEvents()
-res3._fill_panel()
-tab, rks, rows, _ = res3._ticks["count"]
-assert tab.item(0, 3).text() and tab.item(0, 5).text(), "counts, kBq of the counting"
-n_rounds = sum(1 for rk in rks if not rk[3])
-for r, rk in enumerate(rks):
-    tab.item(r, 0).setCheckState(Qt.Unchecked if rk[3] else Qt.Checked)
-app.processEvents()
-app.processEvents()
+n_rounds = rounds_clicked()
 assert res3.res.cell("107", "Liver").bq_src == f"weighted of {n_rounds}", "previewed"
-res3.c_unit.setCurrentIndex([k for k, _ in _app.RESULT_UNITS].index("bq"))   # 0.47 either way
+res3.set_unit("bq")                          # 0.47 either way
 assert res3.table.item(liver, 1).font().bold() and "not applied" in \
     res3.table.item(liver, 1).toolTip(), "what the ticks give, in the table"
-res3.c_unit.setCurrentIndex(0)
+res3.set_unit("pid_g")
 res3.table.setCurrentCell(liver - 1, 1)               # elsewhere, not applied: dropped
-app.processEvents()
-app.processEvents()
+spin()
 assert not res3._pending and res3.res is w3.res and "Not applied" in \
     res3.statusBar().currentMessage(), res3.statusBar().currentMessage()
 res3.table.setCurrentCell(liver, 1)
 app.processEvents()
-res3._fill_panel()
-tab, rks, rows, _ = res3._ticks["count"]
-for r, rk in enumerate(rks):
-    tab.item(r, 0).setCheckState(Qt.Unchecked if rk[3] else Qt.Checked)
-app.processEvents()
-app.processEvents()
+rounds_clicked()
 res3._b_apply.click()
-app.processEvents()
-app.processEvents()
+spin()
 assert w3.res.cell("107", "Liver").bq_src == f"weighted of {n_rounds}", w3.res.cell("107", "Liver")
 assert w3.res.source_label("107", "Liver", "activity").startswith("weighted r1+r2")
-# the photopeak window of round 1 for this cell alone
+# Ctrl+click on a ticked row takes it out; round 1 in the photopeak window, from its list
 res3._fill_panel()
-tab, rks, _, _ = res3._ticks["count"]
-for r, rk in enumerate(rks):
-    tab.item(r, 0).setCheckState(Qt.Checked if rk[3] and rk[1] == 0 else Qt.Unchecked)
-app.processEvents()
-app.processEvents()
+tab, rks, _ = res3._ticks["count"]
+res3._src_click("count", next(r for r, rk in enumerate(rks) if rk[:2] == (0, 1)), add=True)
+spin()
+assert res3.res.round_of(res3.res.cell("107", "Liver").bq_src) == 0, res3.res.cell("107", "Liver")
+tab, rks, _ = res3._ticks["count"]
+cb = tab.cellWidget(next(r for r, rk in enumerate(rks) if rk[:2] == (0, 0)), 1)
+cb.setCurrentIndex(cb.findText("112-168"))
+cb.activated.emit(cb.findText("112-168"))
+spin()
 res3._b_apply.click()
-app.processEvents()
-app.processEvents()
+spin()
 assert w3.res.source_label("107", "Liver", "activity") == "round 1 · 112-168", \
     w3.res.source_label("107", "Liver", "activity")
-res3.c_unit.setCurrentIndex([k for k, _ in _app.RESULT_UNITS].index("src_mass"))
+res3.set_unit("src_mass")
 assert res3._grid()[liver + 1][1] == "weight − tare", res3._grid()[liver + 1]
-res3.c_unit.setCurrentIndex(0)
+res3.set_unit("pid_g")
 app.processEvents()
 res3._fill_panel()
 back = next(b for b in res3.panel.widget().findChildren(QPushButton)
             if b.text() == "Back to the rules")
 back.click()
-app.processEvents()
-app.processEvents()
+spin()
 assert not any(x[:2] == ["107", "Liver"] for x in w3.study.chosen), w3.study.chosen
+# several cells, round 1 in the other window: the cells using it take it there, the kidneys
+# keep their dose-calibrator reading, the others what they had — and get no pick
+w3.study.manual.append(Manual("107", "Kidneys", mbq=10.85, time="16:46"))
+kept = w3.study.chosen
+res3.data_changed.emit({"chosen": []})
+spin()
+names = [t.name for t in res3._rows()]
+res3.table.clearSelection()
+for tn in ("Kidneys", "Liver", "Blood", "Lungs"):
+    res3.table.setRangeSelected(QTableWidgetSelectionRange(names.index(tn), 1,
+                                                           names.index(tn), 1), True)
+app.processEvents()
+res3._fill_panel()
+was = {tn: list(w3.res.cell("107", tn).bq_used) for tn in ("Kidneys", "Liver", "Blood", "Lungs")}
+r1 = w3.res.rounds[0]
+assert was["Kidneys"] == ["dose calibrator"] and any(set(u) & set(r1) for u in was.values()), \
+    (was, r1, w3.study.pick_count, w3.study.chosen)
+tab, rks, _ = res3._ticks["count"]
+cb = tab.cellWidget(next(r for r, rk in enumerate(rks) if rk[:2] == (0, 0)), 1)
+cb.activated.emit(cb.findText("112-168"))
+spin()
+for tn, u in was.items():
+    now = res3.res.cell("107", tn).bq_used
+    assert now == ([f"{u[0]}@112-168"] if u[0] in r1 else u), (tn, u, now)
+assert sorted(x[1] for x in res3._pending[0] if x[0] == "107") == sorted(
+    tn for tn, u in was.items() if u[0] in r1), res3._pending[0]
+res3._unpreview()
+w3.study.manual.pop()
+res3.data_changed.emit({"chosen": kept})
+spin()
 res3.table.setRangeSelected(QTableWidgetSelectionRange(liver - 1, 1, liver, 2), True)
 app.processEvents()
 res3.data_changed.emit({"pick_count": "last"})
@@ -802,7 +875,7 @@ aw.show_all()
 app.processEvents()
 assert aw.stack.currentIndex() == 1 and not aw.c_animal.isEnabled() and not syncs, syncs
 row = [x[1] for x in aw._rows()].index("injection")
-aw.sheet.setCurrentCell(row, 1)
+aw.sheet.setCurrentCell(row, aw.SC)
 QApplication.clipboard().setText("10:01\t10:02")
 aw.sheet.paste()
 app.processEvents()
