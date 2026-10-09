@@ -14,8 +14,8 @@ from pathlib import Path
 from . import __version__
 from . import study as _study
 from .study import (
-    ARRIVE_NEEDED, BASES, EVENT_NEEDED, KIND_LABEL, PRESET_LABEL, Result, Study, arrive_gaps,
-    at_imaging, at_injection, event_text, half_life_s, imaging_label, life_dates, recovery_pct,
+    ARRIVE_NEEDED, EVENT_NEEDED, KIND_LABEL, PRESET_LABEL, Result, Study, arrive_gaps,
+    at_imaging, at_injection, event_text, imaging_label, life_dates, range_text, recovery_pct,
     time_text,
 )
 
@@ -243,13 +243,7 @@ def _bounds(lo, hi, unit) -> str:
 def _choice(study: Study, res: Result, runs) -> list:
     w = study.window or ("auto: widest if one isotope, else the photopeak"
                          if study.window_rule == "wide" else "auto: the photopeak")
-    basis, top = BASES.get(study.min_basis, ""), BASES.get(study.max_basis, "")
-    target = (f"≥ {study.min_counts:g} {basis}" + (f", ≤ {study.cpm_max:g} {top}"
-                                                   if study.cpm_max else "")
-              + f", dead time ≤ {study.dt_max:g}")
-    valid = (f"≥ {study.valid_counts:g} {basis}" + (f", ≤ {study.valid_max:g} {top}"
-                                                    if study.valid_max else "")
-             + f", dead time ≤ {study.valid_dt:g}")
+    target, valid = range_text(study, False), range_text(study, True)
     both = "their mean" if study.combine != "weighted" else "weighted by their counts"
     pick = {"first": "the first counting in range", "last": "the last counting in range",
             "all": f"every counting in range, {both}",
@@ -287,7 +281,7 @@ def _choice(study: Study, res: Result, runs) -> list:
                      {True: "scale"}.get(study.drift_fix, study.drift_fix), ""))],
             ["injection site (tail)", "subtracted from the injected activity"
              if study.subtract_tail else "not subtracted"],
-            ["half-life", ", ".join(f"{i} {h / 3600:g} h" for i in hl if (h := half_life_s(i)))],
+            ["half-life", ", ".join(f"{i} {h / 3600:g} h" for i in hl if (h := study.hl_of(i)))],
             ["activities (Bq, MBq) at", "each animal's injection time" if res.refs
              else _hhmm(res.ref)]]
 
@@ -468,7 +462,9 @@ def build(study: Study, res: Result, runs: dict, log: list[str], specs, digits=N
         elif key == "provenance":
             b += _provenance(study, res, runs, spec)
         elif key == "checks":
-            flagged = [[a, t, "; ".join(c.flags)] for (a, t), c in res.cells.items() if c.flags]
+            flagged = [[a, t, "; ".join(c.flags)] for (a, t), c in res.cells.items() if c.flags] \
+                + [[a, t, "empty tube: nothing collected in it, no value"] for a, t, *_ in
+                   study.empty]
             if spec["flagged"] and flagged:
                 b += [("p", "Values flagged:"), ("table", ["animal", "tissue", "flags"],
                                                   sorted(flagged))]

@@ -50,7 +50,8 @@ from .study import (
     NEEDS_ANAESTHESIA, split_modality,
     ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
     HALF_LIFE_S, ISOTOPES, KIND_LABEL, KINDS, PRESET_LABEL, ROLE_HELP, STRAINS, TIME_FORMATS,
-    TISSUE_MAJOR, TISSUE_ROLES, UNITS, DIGITS, DRIFT_MODES, BASES, Animal, Manual, Result, Source, Study, Tissue,
+    TISSUE_MAJOR, TISSUE_ROLES, UNITS, DIGITS, DRIFT_MODES, BASES, TOPS, EMPTY_TUBE, one_top,
+    DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue,
     age_weeks, at_imaging, at_injection, life_dates, when_views, imaging_label, auto_assign, compute, decay, format_date, format_time,
     guess_role, half_life_s, kind_of, names_summary, next_id, parse_time, propose,
     read_animals, read_column, read_weights, recovery_pct, set_half_lives, strip_summary, tail_pct,
@@ -89,17 +90,35 @@ _ATTRS = {"alias": ("aliases",), "weight": ("weight_g",), "isotope": ("isotope",
           "tail": ("tail_mbq", "tail_time"), "note": ("note",),
           "procedures": ("events",)}   # the rest live in `extra`
 
-RESULT_UNITS = UNITS + [("act", "MBq or kBq (as the tissue table)"),
-                        ("src_bq", "activity source"), ("src_mass", "mass source")]
+RESULT_UNITS = UNITS + [("src_bq", "activity source"), ("src_mass", "mass source")]
+WHOLE = {"bq", "counts"}                 # units shown without decimals, grouped: 26,100,000 Bq
 RESULT_ROWS = [("other", "tail and standards"), ("blank", "blanks"),
                ("inj", "injected activity (MBq, at injection)"),
                ("img", "in the animal at SPECT / PET start (MBq)"),
                ("tail", "tail (%IA)"), ("weight", "body weight (g)"),
                ("sum", "sum of tissues (%IA)")]
 RESULT_FLAGS = [("mass <= 0", True), ("no mass", True), ("at background", True),
-                ("activity in a blank", False), ("dead time", False), ("low counts", False),
+                ("activity in a blank", False), ("under the valid range", False),
                 ("over the valid range", False), ("counts differ", False),
-                ("weighings differ", False), ("out of range", False)]   # (flag, red?)
+                ("weighings differ", False), ("out of the expected range", False)]  # (flag, red?)
+FLAG_TIP = {"mass <= 0": "the tube weighs no more than empty: no %IA/g",
+            "no mass": "an activity, no mass: no %IA/g",
+            "at background": "net counts under 3 σ (the detection limit), or none: nothing to "
+                             "tell from the background",
+            "activity in a blank": "a blank (control tube, empty vial) counting 1,000 or more: "
+                                   "something in it",
+            "under the valid range": "the counting in use is under the valid bottom (Options › "
+                                     "Rules): no valid one for that vial",
+            "over the valid range": "the counting in use is over the valid top — dead time, "
+                                    "CPM or activity (Options › Rules): no valid one",
+            "counts differ": "the counting in use disagrees with another of the vial, or is "
+                             "out of the consensus",
+            "weighings differ": "the weighing in use disagrees with another of the tube, or "
+                                "is out of the consensus",
+            "out of the expected range": "the mass or %IA/g outside what the study expects of "
+                                         "the tissue (Options › Rules ▸ Expected per tissue)"}
+_OLD_FLAGS = {"low counts": "under the valid range", "dead time": "over the valid range",
+              "out of range": "out of the expected range"}     # named so until 2026.10.9
 
 # Options. A JSON file beside BioDist.bat (no registry): read at start, written at every
 # change; Options exports and imports the same file.
@@ -128,7 +147,7 @@ PREFS = {"isotopes": [list(x) for x in ISOTOPES],                     # name, h
          # the Results window: the units its data list offers (one of each kind, the
          # rest one tick away), its decimals box, what show / highlight offer and tick
          "result_units": [k for k, _ in RESULT_UNITS
-                          if k not in ("bq_g", "mbq_g", "bq", "kbq", "mbq", "mass")],
+                          if k not in ("bq_g", "mbq_g", "bq", "mbq", "mass", "cpm")],
          "result_digits_box": True,
          "result_show": [], "result_show_menu": [k for k, _ in RESULT_ROWS],
          "result_flags": [k for k, _ in RESULT_FLAGS],
@@ -285,6 +304,11 @@ def _load_prefs(path: Path | None = None, got=None):
         PREFS["pick_count"] = "all"
     if "dt_max" not in got and type(got.get("dt_warn")) in num:   # a check until 2026.10.6.1
         PREFS["dt_max"] = got["dt_warn"]
+    one_top(PREFS)                               # one top per range since 2026.10.9
+    for k in ("result_flags", "result_flags_menu"):
+        PREFS[k] = list(dict.fromkeys(_OLD_FLAGS.get(f, f) for f in PREFS[k]))
+    PREFS["result_units"] = list(dict.fromkeys(   # "MBq or kBq (as the tissue table)" gone
+        "kbq" if u == "act" else u for u in PREFS["result_units"]))
     if PREFS["combine"] not in COMBINE:
         PREFS["combine"] = "mean"
     if lg["autosave"] == "overwrite":            # ponytail: a mode until 2026.10.5.1
@@ -506,7 +530,10 @@ def _aspec(name: str) -> dict:
 
 
 def _copy_field(a: Animal, b: Animal, key):
-    """One field of `a` onto `b`, the numbers with the text they were read as."""
+    """One field of `a` onto `b`, the numbers with the text they were read as; a procedure's
+    ("ev", kind, n, field) onto b's same procedure (added if b has none)."""
+    if isinstance(key, tuple):
+        return _list_put(b, key, _list_cell(a, key, None), None)
     for x in _ATTRS.get(key, ()):
         setattr(b, x, copy.deepcopy(getattr(a, x)))
         if x in a.typed:
@@ -536,6 +563,25 @@ def _typed_num(m, f) -> str:
 
 def _events_of(a: Animal, kind) -> list[dict]:
     return [e for e in a.events if e.get("kind") == kind]
+
+
+_EV_SEP = " · "                          # a procedure's field as a card shows it
+
+
+def _ev_key(kind, n, f) -> str:
+    """A procedure's field under its name on the cards (Animal.show): 'imaging · start', the
+    second imaging's 'imaging 2 · start'."""
+    return f"{kind or 'other'}{f' {n + 1}' if n else ''}{_EV_SEP}{f}"
+
+
+def _ev_shown(a: Animal) -> list[tuple[str, tuple, dict]]:
+    """The procedures' fields this animal's card shows: (name, ("ev", kind, n, field), spec)."""
+    out = []
+    for kind in dict.fromkeys(e.get("kind", "") for e in a.events):
+        for n, ev in enumerate(_events_of(a, kind)):
+            out += [(k, ("ev", kind, n, sp["name"]), sp) for sp in ev_fields(ev, PREFS["procedures"])
+                    if _shows(a, k := _ev_key(kind, n, sp["name"]))]
+    return out
 
 
 def _list_cell(a: Animal, key, day) -> str:
@@ -787,6 +833,18 @@ EFF_TIP = ("A counter turns CPM into Bq with its counting efficiency (counts per
            "one per counter, isotope and energy window. A Hidex file carries its own; a "
            "Wizard2 file (or a Hidex one set to 1) none: type it in the table. Untick to type "
            "them for every file. Bq = CPM / 60 / efficiency")
+BOTTOM_TIP = ("The bottom of both ranges. counts (the default): counted in the energy window "
+              "in use — how sure the value is, ±1/√counts. counts (whole spectrum): in the "
+              "file's widest window (15-2047 keV), the same as counts when that is the window "
+              "in use. CPM: a rate, blind to the counting time (1,000 CPM is 500 counts in 30 s "
+              "or 2,000 in 2 min). Bq, kBq, MBq: the activity in the vial as it was counted "
+              "(CPM / 60 / efficiency). Changing it keeps the numbers: retype them")
+TOP_TIP = ("The top of both ranges (0: none) — where the counter stops being linear. dead time "
+           "(the default): the share of the time it was busy, what its correction rests on. "
+           "CPM (whole spectrum): every pulse it had to handle, what makes that dead time. "
+           "Bq, kBq, MBq: the activity in the vial (99mTc, 112-168 keV: its efficiency falls "
+           "4.6 % from 0.4 to 70 kBq). counts: a longer counting gets more — little use as a "
+           "top. One top: any but the dead time means no dead-time bound")
 MIN_TIP = ("The rule prefers a counting with at least this many counts (dead time and CPM "
            "allowing): 10,000 counts is ±1 % from the counting statistics. A vial with none "
            "there takes a valid one — not flagged")
@@ -1187,6 +1245,11 @@ class AnimalCard(QFrame):
             e.setToolTip(FIELD_TIP.get(k.lower(), ""))
             e.editingFinished.connect(lambda key=k, ed=e: self._set_extra(key, ed))
             row((k, k, e))
+        for k, ek, sp in _ev_shown(a):           # a procedure's field ticked "on card"
+            v = _list_cell(a, ek, day)
+            e = _edit(_shown(v, day) if sp["type"] == "time" else v, sp["example"])
+            e.editingFinished.connect(lambda ek=ek, ed=e, ty=sp["type"]: self._set_ev(ek, ed, ty))
+            row((k, k, e))
 
         # the note spans the card and has no label: it is whatever the user wants it to be
         self.e_note = QPlainTextEdit(a.note)
@@ -1368,6 +1431,16 @@ class AnimalCard(QFrame):
             self.a.extra[key] = text.strip()
         self._show_dose()
         self.changed.emit()
+
+    def _set_ev(self, ek, ed, kind):
+        """A procedure's field typed on the card."""
+        old = _list_cell(self.a, ek, self.day)
+        text = _typed(old, ed.text(), self.day) if kind == "time" else ed.text().strip()
+        if kind == "time":
+            ed.setText(_shown(text, self.day))
+        if text != old:
+            _list_put(self.a, ek, text, self.day)
+            self.changed.emit()
 
     def _add_alias(self, text, focus=True):
         """The aliases, comma-separated, in one field; its × hides them (they are kept)."""
@@ -1992,6 +2065,7 @@ class ResultsWindow(QMainWindow):
         acts = {}
         for key, label in items:
             a = m.addAction(label)
+            a.setToolTip(FLAG_TIP.get(key, ""))
             a.setCheckable(True)
             a.setChecked(key in on)
             a.toggled.connect(self.refresh)
@@ -2089,6 +2163,20 @@ class ResultsWindow(QMainWindow):
                 lab.setToolTip(tip)
                 v.addWidget(lab)
                 v.addWidget(self._src_table(what, rows, one, keys))
+        marked = [k in {tuple(x[:2]) for x in s.empty} for k in keys]
+        e = QCheckBox("empty tube — nothing was collected in it")
+        e.setCheckState(Qt.Checked if all(marked) else Qt.PartiallyChecked if any(marked)
+                        else Qt.Unchecked)
+        e.setToolTip("Ticked: no value for these cells, no flag — the tube held nothing (a "
+                     "tissue not found or lost). Said in the log and the report's checks. "
+                     "BioDist offers it for a tissue weighing about nothing that counts "
+                     "background")
+        e.clicked.connect(lambda on: (self._unpreview(), self._set(
+            empty=[x for x in self.study.empty if tuple(x[:2]) not in keys]
+            + ([list(k) for k in keys] if on else []),
+            say=("Marked empty" if on else "No longer marked empty") + " — Ctrl+Z in the "
+            "main window undoes")))
+        v.addWidget(e)
         if not self._ticks:
             v.addStretch(1)
             self._panel_width()
@@ -2108,9 +2196,15 @@ class ResultsWindow(QMainWindow):
                                  "(Ctrl+Z in the main window undoes)")
         self._b_apply.clicked.connect(self._apply)
         saved = self._saved[0] if self._saved else s
-        b_rules = QPushButton("Back to the rules")
-        b_rules.setToolTip("Drop the selected cells' own picks: the rules decide again")
-        b_rules.setEnabled(any(tuple(x[:2]) in keys for x in saved.chosen))
+        own = any(tuple(x[:2]) in keys for x in saved.chosen)
+        b_rules = QPushButton("Back to the rules" if own or self._pending else
+                              "follow the rules ✓")
+        b_rules.setToolTip("Drop the selected cells' own picks (and any ticks not applied): "
+                           "the rules decide again" if own else
+                           "Drop the ticks not applied: the rules' pick again" if self._pending
+                           else "These cells take what the rules pick (Options › Rules) — "
+                           "nothing of their own to drop")
+        b_rules.setEnabled(own or bool(self._pending))
         b_rules.clicked.connect(lambda: self._to_rules(keys))
         h.addWidget(self._b_apply)
         h.addWidget(b_rules)
@@ -2192,7 +2286,7 @@ class ResultsWindow(QMainWindow):
         else:
             if x[0] == "dose calibrator":
                 return "", 0, ""
-            if x[2] and x[2] > s.valid_dt:
+            if x[2] and s.valid_dt and x[2] > s.valid_dt:
                 why.append(f"dead time {x[2]:.2f}: not valid (≤ {s.valid_dt:g}) — the counter "
                            "missed counts, the correction is less sure")
             if x[3] is not None and x[3] < s.valid_counts:
@@ -2201,7 +2295,7 @@ class ResultsWindow(QMainWindow):
                                                         "alone" if x[7] and x[7] != math.inf
                                                         else ""))
             if s.valid_max and (x[8] or 0) > s.valid_max:
-                why.append(f"{x[8]:,.4g} {BASES.get(s.max_basis)}: not valid (≤ "
+                why.append(f"{x[8]:,.4g} {TOPS.get(s.max_basis)}: not valid (≤ "
                            f"{s.valid_max:,.4g}) — past where the counter is linear")
             f, w = x[0].rsplit("@", 1) if "@" in x[0] else (x[0], c.rule_w.get(x[0], ""))
             pk = ("count", f, w)
@@ -2410,6 +2504,8 @@ class ResultsWindow(QMainWindow):
     def _to_rules(self, keys):
         """The selected cells' own picks go — now, it is a button, not a tick."""
         self._unpreview()
+        if not any(tuple(x[:2]) in keys for x in self.study.chosen):
+            return self.refresh()                # only ticks not applied: dropped
         self._set(chosen=[x for x in self.study.chosen if tuple(x[:2]) not in keys],
                   say="Back to the rules — Ctrl+Z in the main window undoes")
 
@@ -2457,11 +2553,12 @@ class ResultsWindow(QMainWindow):
         return self._units[max(0, self.c_unit.currentIndex())]
 
     def _unit_set(self, *_, redraw=True):
-        own = self.unit == "act" or self.unit.startswith("src_")   # its format, or words
+        own = self.unit.startswith("src_")       # words
         self.s_digits.blockSignals(True)
         self.s_digits.setMinimum(-1 if own else 0)
-        self.s_digits.setValue(-1 if own else PREFS["digits"].get(self.unit, 2))
-        self.s_digits.setEnabled(not own)
+        self.s_digits.setValue(-1 if own else 0 if self.unit in WHOLE else
+                               PREFS["digits"].get(self.unit, 2))
+        self.s_digits.setEnabled(not own and self.unit not in WHOLE)
         self.s_digits.blockSignals(False)
         if redraw:
             self.refresh()
@@ -2483,11 +2580,8 @@ class ResultsWindow(QMainWindow):
     @staticmethod
     def _text(s, res, aid, tissue, unit, nd) -> str:
         """A cell as the table shows it."""
-        if unit.startswith("src_"):
+        if unit.startswith("src_") or res.cell(aid, tissue).bq_src == EMPTY_TUBE:
             return res.source_label(aid, tissue, "activity" if unit == "src_bq" else "mass")
-        if unit == "act":                        # MBq or kBq, its digits by its size
-            v = res.value(s, aid, tissue, "bq")
-            return "" if v is None else _act(v)
         v = res.value(s, aid, tissue, unit)
         return "" if v is None else f"{v:,.{nd}f}"
 
@@ -2500,7 +2594,7 @@ class ResultsWindow(QMainWindow):
         ranges = self.table.selectedRanges()
         self.stack.setCurrentIndex(0 if res.cells else 1)
         unit = self.unit
-        nd = PREFS["digits"].get(unit, 2)
+        nd = 0 if unit in WHOLE else PREFS["digits"].get(unit, 2)
         tissues, animals = self._rows(), s.output_animals()
         if not self._img_seen and any(at_imaging(s, res, a.id) for a in s.animals):
             self._img_seen = True                # a first SPECT / PET session: the row shows
@@ -2533,6 +2627,8 @@ class ResultsWindow(QMainWindow):
                 it = QTableWidgetItem(self._text(s, res, a.id, t.name, unit, nd))
                 if not unit.startswith("src_"):
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if cell.bq_src == EMPTY_TUBE:            # marked so: no value, said in grey
+                    it.setForeground(QColor("#777"))
                 if self._saved and it.text() != self._text(*self._saved, a.id, t.name, unit, nd):
                     it.setForeground(QColor(_OK_TEXT))     # what the ticks give, not applied
                     f = it.font()
@@ -2694,7 +2790,8 @@ class AnimalWindow(QMainWindow):
          ["species", "strain", "genotype", "sex", "DOB", "supplier", "arrival",
           "protocol", "housing", "health status", "euthanasia", "euthanasia time"]),
     ]
-    SC = 3                                   # the table view: field, on card, copy, animals
+    SC = 1                                   # the table view: field, animals, copy, on card
+    COL_W = 150                              # an animal's column in it
     OPTIONAL = {"injection volume",          # in the first group, not needed for the values
                 "arrival", "health status"}  # the other way to a date of birth; nice to have
     PAIRED = {"age", "age at arrival"}       # on the DOB's and the arrival's line
@@ -2785,9 +2882,11 @@ class AnimalWindow(QMainWindow):
         for x in (self.a_prev, self.a_combo, self.a_next):
             x.setEnabled(not on)
         self.stack.setCurrentIndex(int(on))
-        if on:
-            self.resize(max(self.width(), 1100), self.height())
         self.refresh(force=True)
+        if on:                                   # every column in view, within the screen
+            scr = self.screen().availableGeometry()
+            self.resize(min(max(self.width(), self._table_width()), scr.width() - 40),
+                        self.height())
 
     def refresh(self, force=False):
         """Redrawn from the model — not while it is being typed in: its own edits are there."""
@@ -2974,6 +3073,7 @@ class AnimalWindow(QMainWindow):
                                              f"in the animal at {t:%H:%M}</span>"))
                     break
             kind = ev.get("kind", "")
+            nth = [e is ev for e in _events_of(a, kind)].index(True)   # its kind's nth
             own = {f["name"] for f in PREFS["procedures"].get(kind, [])}
             watched = {f["when"].split("=")[0].strip() for f in PREFS["procedures"].get(
                 kind, []) if "=" in f["when"]}           # fields others show by
@@ -3011,7 +3111,14 @@ class AnimalWindow(QMainWindow):
                     x.setToolTip(f"Remove {f} from this procedure (Ctrl+Z brings it back)")
                     x.setStyleSheet("QToolButton{border:none;color:#c06060;}")
                     x.clicked.connect(lambda _=0, ev=ev, f=f: (ev.pop(f, None), self._redraw()))
-                    g.addWidget(x, r, 2, Qt.AlignLeft)
+                    hl.addWidget(x)
+                eks = [("ev", kind, nth, sp["name"]) for sp in group]   # copied, shown together
+                g.addWidget(self._copy_button(eks, label=f"{kind or 'other'} {label}"), r, 2)
+                on = QCheckBox()
+                on.setChecked(all(_shows(a, _ev_key(*k[1:])) for k in eks))
+                on.toggled.connect(lambda v, eks=eks: [self.main._show_field(
+                    self.a, _ev_key(*k[1:]), v) for k in eks])
+                g.addWidget(on, r, 3, Qt.AlignCenter)
                 r += 1
             g.addWidget(self._more_field(ev), r, 1, Qt.AlignLeft)
             r += 1
@@ -3137,11 +3244,15 @@ class AnimalWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def _add_event(self, kind):
+        again = bool(_events_of(self.a, kind))  # a CT after a SPECT: the same anaesthesia
         self.a.events.append({"kind": kind})
-        if kind in NEEDS_ANAESTHESIA:
+        if kind in NEEDS_ANAESTHESIA and not again:
             self.a.events.append({"kind": "anaesthesia"})
             self.statusBar().showMessage(f"{kind} added, and its anaesthesia as a procedure of "
                                          "its own — × removes it if there was none", 8000)
+        elif kind in NEEDS_ANAESTHESIA:
+            self.statusBar().showMessage(f"{kind} added, under the anaesthesia already there — "
+                                         "+ procedure ▸ anaesthesia if it had its own", 8000)
         self._redraw()
 
     def _split(self, a):
@@ -3192,28 +3303,34 @@ class AnimalWindow(QMainWindow):
     def _fill_sheet(self):
         st, sh = self.main.study, self.sheet
         rows = self._drawn = self._rows()   # an edit before the next redraw goes by these
-        sh.clear()
-        sh.setColumnCount(len(st.animals) + self.SC)
-        sh.setHorizontalHeaderLabels(["field", "on card", ""] + [a.label or "?" for a in st.animals])
-        sh.horizontalHeaderItem(1).setToolTip("Whether the cards show the field (the data are "
-                                              "kept either way): ticked on every card, half on "
-                                              "some")
+        n = len(st.animals)
+        cp, oc = self.SC + n, self.SC + n + 1   # copy ▾, on card: after the animals, as the
+        sh.clear()                              # one-animal view has them
+        sh.setColumnCount(oc + 1)
+        sh.setHorizontalHeaderLabels(["field"] + [a.label or "?" for a in st.animals]
+                                     + ["", "on card"])
+        sh.horizontalHeaderItem(oc).setToolTip("Whether the cards show the field (the data are "
+                                               "kept either way): ticked on every card, half "
+                                               "on some")
         sh.setRowCount(len(rows))
         fields = {k for _, _, keys in self._groups(st.animals[0]) for k in keys}
         for r, (lab, key, part, color) in enumerate(rows):
             sh.put(r, 0, lab, editable=False, color=color)
-            sh.put(r, 1, "", editable=False)
-            sh.put(r, 2, "", editable=False)
-            if isinstance(key, str) and key in fields and part in (None, 0):
-                on = [_shows(a, key) for a in st.animals]
+            sh.put(r, cp, "", editable=False)
+            sh.put(r, oc, "", editable=False)
+            ev = isinstance(key, tuple) and key[0] == "ev"     # a procedure's field
+            if ev or isinstance(key, str) and key in fields and part in (None, 0):
+                shown = _ev_key(*key[1:]) if ev else key
+                on = [_shows(a, shown) for a in st.animals]
                 c = QCheckBox()
                 c.setTristate(False)
                 c.setCheckState(Qt.Checked if all(on) else Qt.PartiallyChecked if any(on)
                                 else Qt.Unchecked)
-                c.clicked.connect(lambda v, key=key: self.main._show_field(
-                    self.main.study.animals[0], key, v, every=True))
-                sh.setCellWidget(r, 1, _centred(c))
-                sh.setCellWidget(r, 2, self._copy_button(key, lambda: self._sheet_animal()))
+                c.clicked.connect(lambda v, shown=shown: self.main._show_field(
+                    self.main.study.animals[0], shown, v, every=True))
+                sh.setCellWidget(r, cp, self._copy_button(key, lambda: self._sheet_animal(),
+                                                          label=lab))
+                sh.setCellWidget(r, oc, _centred(c))
             for c, a in enumerate(st.animals, self.SC):
                 text = _cell_text(a, key, part, st.day)
                 life = life_dates(a.extra, st.day) if key in ("DOB", "age", "age at arrival") \
@@ -3222,15 +3339,23 @@ class AnimalWindow(QMainWindow):
                     sh.put(r, c, f"{v:%d/%m/%Y}" if key == "DOB" else f"{v:.1f} wk",
                            tip="worked out from the other dates — type to set it", color="#777")
                     continue
-                sh.put(r, c, text, tip=text if len(text) > 24 else "")   # columns stop at 220 px
-        sh.resizeColumnsToContents()
-        sh.setColumnWidth(1, 56)
-        sh.setColumnWidth(2, 62)
-        for c in range(self.SC, sh.columnCount()):
-            sh.setColumnWidth(c, max(90, min(220, sh.columnWidth(c) + 12)))
+                sh.put(r, c, text, tip=text if len(text) > 20 else "")   # 150 px: cut short
+        sh.resizeColumnToContents(0)
+        for c in range(self.SC, cp):
+            sh.setColumnWidth(c, self.COL_W)
+        sh.setColumnWidth(cp, 62)
+        sh.setColumnWidth(oc, 56)
         self.statusBar().showMessage("Select several cells and type to fill them all (a comma "
                                      "list is dealt out); Ctrl+V pastes a row or a block "
                                      "copied from Excel from the current cell on")
+
+    def _table_width(self) -> int:
+        """The window as wide as the table view whole, its vertical bar in."""
+        sh = self.sheet
+        return (sum(sh.columnWidth(c) for c in range(sh.columnCount())) + 2 * sh.frameWidth()
+                + sh.verticalScrollBar().sizeHint().width()
+                + (sh.verticalHeader().width() if sh.verticalHeader().isVisible() else 0)
+                + self.width() - self.stack.width())
 
     def _sheet_animal(self) -> Animal:
         """The table view's animal to copy from: the current cell's, else the first."""
@@ -3241,13 +3366,13 @@ class AnimalWindow(QMainWindow):
     def _sheet_edited(self, out):
         st, rows = self.main.study, self._drawn
         for r, c, text in out:
-            if c >= self.SC:
+            if self.SC <= c < self.SC + len(st.animals):
                 a = st.animals[c - self.SC]
                 _cell_put(a, rows[r][1], rows[r][2], text, st.day)
                 if rows[r][1] == "alias" and text.strip() and a.show.get("alias") is False:
                     del a.show["alias"]          # an alias typed here shows on its card
         for r, c, _ in out:                      # tidied as the model reads it
-            if c >= self.SC:
+            if self.SC <= c < self.SC + len(st.animals):
                 self.sheet.put(r, c, _cell_text(st.animals[c - self.SC], rows[r][1],
                                                 rows[r][2], st.day))
         self.main._later(self.main._sync)()
@@ -3352,14 +3477,16 @@ class AnimalWindow(QMainWindow):
         return self._field_widgets(a, _aspec(key), lambda: _get(a, key),
                                    lambda x: _put(a, key, x))
 
-    def _copy_button(self, key, source=None) -> QToolButton:
-        """copy ▾: this animal's `key` to every other, or to the ticked ones — every animal
-        listed in the study's order, the one copied from greyed. `source()`: the animal to
-        copy from when the menu opens (the table view: the current cell's), else this one."""
+    def _copy_button(self, key, source=None, label=None) -> QToolButton:
+        """copy ▾: this animal's `key` (a list: those fields) to every other, or to the
+        ticked ones — every animal listed in the study's order, the one copied from greyed.
+        `source()`: the animal to copy from when the menu opens (the table view: the current
+        cell's), else this one. `label`: the field as said, if not its key."""
+        label = label or key
         b = QToolButton()
         b.setText("copy ▾")
-        b.setToolTip(f"Copy this animal's {key} to the other animals" if source is None else
-                     f"Copy the {key} of the animal whose cell is selected (else the first) "
+        b.setToolTip(f"Copy this animal's {label} to the other animals" if source is None else
+                     f"Copy the {label} of the animal whose cell is selected (else the first) "
                      "to the others")
         b.setPopupMode(QToolButton.InstantPopup)
         b.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};}} QToolButton::menu-indicator{{image:none;}}")
@@ -3370,7 +3497,7 @@ class AnimalWindow(QMainWindow):
             src = source() if source else self.a
             others = [x for x in self.main.study.animals if x is not src]
             m.addAction(f"{src.label or '?'} to every other animal",
-                        lambda: self._copy(key, others, src))
+                        lambda: self._copy(key, others, src, label))
             m.addSection("or tick some")
             ticks = []
             for x in self.main.study.animals:
@@ -3382,19 +3509,23 @@ class AnimalWindow(QMainWindow):
                 else:
                     ticks.append((x, act))
             m.addAction("copy to the ticked ones",
-                        lambda: self._copy(key, [x for x, act in ticks if act.isChecked()], src))
+                        lambda: self._copy(key, [x for x, act in ticks if act.isChecked()], src,
+                                           label))
         m.aboutToShow.connect(build)
         b.setMenu(m)
         b.setEnabled(len(self.main.study.animals) > 1)
         return b
 
-    def _copy(self, key, targets, src=None):
+    def _copy(self, key, targets, src=None, label=None):
         src = src or self.a
         for b in targets:
-            _copy_field(src, b, key)
+            for k in key if isinstance(key, list) else [key]:
+                _copy_field(src, b, k)
         self.main._later(self.main._sync)()
-        self.statusBar().showMessage(f"{key} copied to {len(targets)} animal(s) — Ctrl+Z in the "
-                                     "main window undoes it", 6000)
+        self.statusBar().showMessage(f"{label or key} copied to {len(targets)} animal(s) — "
+                                     "Ctrl+Z in the main window undoes it", 6000)
+        if isinstance(key, (list, tuple)):       # a procedure added to some: shown here too
+            QTimer.singleShot(0, lambda: self.refresh(force=True))
 
 
 # ------------------------------------------------------------------- options window
@@ -3408,7 +3539,8 @@ class OptionsWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} — options")
         self.setMinimumSize(820, 520)
         scr = QApplication.primaryScreen().availableGeometry()   # the Results page whole
-        self.resize(min(980, scr.width() - 40), min(900, scr.height() - 60))
+        self.resize(min(1150, scr.width() - 40), min(900, scr.height() - 60))   # Procedures'
+        #                                          field table whole
         self.topics = QListWidget()
         self.topics.setFixedWidth(190)
         self.pages = QStackedWidget()
@@ -3974,8 +4106,9 @@ class OptionsWindow(QMainWindow):
              "max_basis", "dt_max", "cpm_max", "valid_counts", "valid_max", "valid_dt",
              "count_agree", "count_tol_pct",
              "count_tol_sigma", "ref_rule", "ref_time", "mass_rule", "mass_agree", "mass_tol_mg", "mass_tol_pct",
-             "pick_mass", "pick_bq", "drift_fix", "subtract_tail")
-    DEFAULTED = [k for k in RULES if k not in ("window", "ref_time")]   # PREFS keeps these
+             "pick_mass", "pick_bq", "drift_fix", "subtract_tail", "half_lives")
+    DEFAULTED = [k for k in RULES if k not in ("window", "ref_time", "half_lives")]   # PREFS
+    #                                              keeps these (half-lives: Options › Isotopes)
 
     def _data(self):
         w, v = self._page("Rules", "How the values of the study open are made, and what each "
@@ -3988,7 +4121,8 @@ class OptionsWindow(QMainWindow):
         self.refresh_rules()
         v.addSpacing(8)
         g = QLabel("<b>Expected per tissue</b> (this study) — the mass (mg) and uptake (%IA/g) "
-                   "a tissue should have; 0 = no bound. Outside: flagged “out of range”. "
+                   "a tissue should have; 0 = no bound. Outside: flagged “out of the "
+                   "expected range”. "
                    "+ offers the study's tissues.")
         g.setWordWrap(True)
         v.addWidget(g)
@@ -4058,12 +4192,13 @@ class OptionsWindow(QMainWindow):
         v.addLayout(f)
         v.addSpacing(8)
         v.addWidget(QLabel("<b>Decimals</b> shown, per unit (the decimals box sets them "
-                           "too; MBq or kBq as the tissue table: by its size)"))
+                           "too; Bq and counts are whole)"))
         g = QGridLayout()
         for i, (k, lab) in enumerate(UNITS):
             n = QSpinBox()
-            n.setRange(0, 8)
+            n.setRange(0, 0 if k in WHOLE else 8)
             n.setFixedWidth(52)
+            n.setEnabled(k not in WHOLE)
             n.setValue(PREFS["digits"].get(k, 2))
             n.valueChanged.connect(lambda x, k=k: self._set("digits", {**PREFS["digits"], k: x}))
             unit = QLabel(lab)
@@ -4094,7 +4229,8 @@ class OptionsWindow(QMainWindow):
         s, res = main.study, main.res
         rounds = [res.round_label(i) for i in range(len(res.rounds))] if res else []
         windows = s.windows_available(main.runs)
-        sig = (tuple(getattr(s, k) for k in self.RULES), len(s.chosen), tuple(rounds),
+        sig = (repr([getattr(s, k) for k in self.RULES]), len(s.chosen), tuple(rounds),
+               tuple(a.isotope for a in s.animals),
                tuple(windows), s.name, tuple(PREFS[k] for k in self.DEFAULTED))
         if hasattr(self, "_fill_ranges"):
             self._fill_ranges()
@@ -4110,10 +4246,26 @@ class OptionsWindow(QMainWindow):
         box.addWidget(host)
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
+        differ = [k for k in self.DEFAULTED if getattr(s, k) != PREFS[k]]
         head = QLabel(f"<b>How the values are made</b> — this study: "
-                      f"{html.escape(s.name or '(not named yet)')}")
+                      f"{html.escape(s.name or '(not named yet)')}. A change applies at once"
+                      + (f"; <span style='color:{_ARRIVE}'>●</span> not the defaults" if differ
+                         else ""))
+        head.setToolTip("Every value follows the rules as soon as one changes — nothing to "
+                        "apply. Ctrl+Z on this page undoes the last change")
+        head.setWordWrap(True)                   # not in a form row: it may wrap
         v.addWidget(head)
         f = QFormLayout()
+
+        def row(label, fields, w):
+            """A rule's row: ● before its name when the study's differs from the defaults."""
+            off = [k for k in fields if k in differ]
+            lab = QLabel(label + (f" <span style='color:{_ARRIVE}'>●</span>" if off else ""))
+            if off:
+                lab.setToolTip("Not the defaults — they are " + ", ".join(
+                    f"{k} {PREFS[k]!r}" for k in off) + ". Back to the defaults (below) takes "
+                    "them all")
+            f.addRow(lab, w)
 
         def combo(items, now, tip, fn):
             c = _combo([lab for _, lab in items], dict(items).get(now, now))
@@ -4158,55 +4310,57 @@ class OptionsWindow(QMainWindow):
             h_.addStretch(1)
             return w_
 
-        def unit(k):                             # the same width on both range rows: aligned
-            u = QLabel(BASES.get(k, k))
-            u.setFixedWidth(46)
-            return u
+        def unit(k):                             # the same text on both rows: aligned
+            return QLabel("" if k == "dt" else TOPS.get(k, k))
 
         def amount(field, k, step, tip):
-            """A range bound in its unit: whole counts / CPM, Bq to 3 decimals."""
-            return num(field, 0, 1e9, step if k in ("counts", "cpm") else
-                       {"bq": 100, "kbq": 0.1, "mbq": 0.001}[k], 0 if k in ("counts", "cpm",
-                                                                            "bq") else 3,
-                       tip, 100)
+            """A range bound in its unit: whole counts / CPM, Bq to 3 decimals, a dead time
+            to 2 (1.00: none of the time lost)."""
+            if k == "dt":
+                return num(field, 0, 10.0, 0.05, 2, tip + " — a dead-time factor (0: none)", 100)
+            whole = k.split("_")[0] in ("counts", "cpm")
+            return num(field, 0, 1e9, step if whole else {"bq": 100, "kbq": 0.1, "mbq": 0.001}[k],
+                       0 if whole or k == "bq" else 3, tip, 100)
+
+        def top_in(k):
+            """The tops' unit changed: the dead time (its defaults) or a CPM / Bq one (none
+            until typed) — one top a range, never both."""
+            dt = k == "dt"
+            if k == s.max_basis:
+                return
+            self._rule(max_basis=k, valid_max=0, cpm_max=0,
+                       valid_dt=(s.valid_dt or DT_VALID) if dt else 0,
+                       dt_max=(s.dt_max or DT_WARN) if dt else 0)
         lo, hi = s.min_basis, s.max_basis
+        vtop, ttop = ("valid_dt", "dt_max") if hi == "dt" else ("valid_max", "cpm_max")
         f.addRow(QLabel("<b>Countings</b>"))
-        f.addRow("Counting window", cw)
-        f.addRow("Typed by hand", combo(
+        row("Counting window", ("window_rule",), cw)
+        row("Typed by hand", ("pick_bq",), combo(
             [("auto", "wins over the counter"), ("files", "not used — the counter only")],
             s.pick_bq, "An activity typed in the tissue table (+ ▸ activity: read on the dose "
             "calibrator) replaces what the counter gives that vial — or not. Not used, it is "
             "still in the side panel, to pick for a cell", lambda x: self._rule(pick_bq=x)))
-        f.addRow("Ranges in", line(
-            combo([(k, ("counts in the window" if k == "counts" else v) + " ≥")
-                   for k, v in BASES.items()], lo, "The bottom of both ranges: counts (how sure "
-                  "a counting is: ±1/√counts), CPM, or the activity in the vial as it was "
-                  "counted (CPM / 60 / efficiency). Changing it keeps the numbers: retype them",
-                  lambda x: self._rule(min_basis=x)),
-            combo([(k, "≤ " + v) for k, v in BASES.items() if k != "counts"], hi,
-                  "The top of both ranges (0: none): CPM, or the activity in the vial as it "
-                  "was counted — where this counter stops being linear (99mTc, 112-168 keV: "
-                  "its efficiency falls 4.6 % from 0.4 to 70 kBq)",
-                  lambda x: self._rule(max_basis=x))))
-        f.addRow("Valid", line(
+        row("Ranges in", ("min_basis", "max_basis"), line(
+            "≥", combo(list(BASES.items()), lo, BOTTOM_TIP, lambda x: self._rule(min_basis=x)),
+            "· ≤", combo(list(TOPS.items()), hi, TOP_TIP, top_in)))
+        row("Valid", ("valid_counts", "valid_max", "valid_dt"), line(
             "≥", amount("valid_counts", lo, 100, VALID_TIP), unit(lo),
-            "· ≤", amount("valid_max", hi, 10000, VALID_TIP + " (0: no top)"), unit(hi),
-            "· dead time ≤", num("valid_dt", 1.0, 10.0, 0.05, 2, VALID_TIP, 70)))
-        f.addRow("Target range", line(
+            "· ≤", amount(vtop, hi, 10000, VALID_TIP + " (0: no top)"), unit(hi)))
+        row("Target range", ("min_counts", "cpm_max", "dt_max"), line(
             "≥", amount("min_counts", lo, 1000, MIN_TIP), unit(lo),
-            "· ≤", amount("cpm_max", hi, 10000, "The rule prefers a counting under this "
-                          "too (0: none) — where this counter stops being linear"), unit(hi),
-            "· dead time ≤", num("dt_max", 1.0, 10.0, 0.05, 2, DT_TIP, 70)))
+            "· ≤", amount(ttop, hi, 10000, DT_TIP if hi == "dt" else
+                          "The rule prefers a counting under this too (0: none) — where this "
+                          "counter stops being linear"), unit(hi)))
         g = QLabel("not valid: flagged, used only when nothing is · target: what the rule "
                    "prefers among the valid")       # one line: a wrapped label grows the row
         g.setToolTip(VALID_TIP + "\n\n" + MIN_TIP)
         g.setStyleSheet("color:#8d8d8d;")
         f.addRow("", g)
-        f.addRow("Counted more than once", combo(
+        row("Counted more than once", ("pick_count",), combo(
             list(COUNT_RULES.items()) + [(f"round:{r[0]}", res.round_label(i))
                                          for i, r in enumerate(res.rounds if res else [])],
             now, COUNT_TIP, lambda x: self._rule(pick_count=x)))
-        f.addRow("Consensus", line(
+        row("Consensus", ("count_agree", "count_tol_pct", "count_tol_sigma"), line(
             self._tick(s, "count_agree", "leave out one out of it"), "· agree within",
             num("count_tol_pct", 0, 100, 0.5, 1, "Two countings of a vial (in one window, "
                 "decay-corrected to one instant) agree when this close …", 64), "% or",
@@ -4215,24 +4369,24 @@ class OptionsWindow(QMainWindow):
                 "counted over the tissue's own (background and dead time off). 1,000 counts "
                 "is ±3 %, 10,000 ±1 %; 219 counted over a background of 162, ±26 %", 64),
             "σ of their counts"))
-        f.addRow("Several countings", combo(
+        row("Several countings", ("combine",), combo(
             list(COMBINE.items()), s.combine, COMBINE_TIP, lambda x: self._rule(combine=x)))
         f.addRow(QLabel("<b>Weighings</b>"))
-        f.addRow("Typed by hand", combo(
+        row("Typed by hand", ("pick_mass",), combo(
             [("auto", "wins over the tubes"), ("files", "not used — the tubes only")],
             s.pick_mass, "A mass typed in the tissue table (+ ▸ mass: weighed on paraffin, "
             "parafilm…) replaces the tubes' — or not. Not used, it is still in the side panel, "
             "to pick for a cell", lambda x: self._rule(pick_mass=x)))
-        f.addRow("Weighed more than once", combo(
+        row("Weighed more than once", ("mass_rule",), combo(
             list(MASS_RULES.items()), s.mass_rule, MASS_TIP, lambda x: self._rule(mass_rule=x)))
-        f.addRow("Consensus", line(
+        row("Consensus", ("mass_agree", "mass_tol_mg", "mass_tol_pct"), line(
             self._tick(s, "mass_agree", "leave out one out of it"), "· agree within",
             num("mass_tol_mg", 0, 1000, 0.5, 1, "Two weighings of a tube agree when this close "
                 "(the balance repeats within ±0.4 mg) …", 64), "mg or",
             num("mass_tol_pct", 0, 100, 1, 0, "… or within this % of the lighter one", 64),
             "% of the tissue"))
         f.addRow("Several weighings", QLabel("their mean (ticked in the side panel)"))
-        f.addRow("Weighing correction", combo(list(DRIFT_MODES.items()), {True: "scale", False: ""}
+        row("Weighing correction", ("drift_fix",), combo(list(DRIFT_MODES.items()), {True: "scale", False: ""}
                                         .get(s.drift_fix, s.drift_fix), DRIFT_TIP,
                                         lambda x: self._rule(drift_fix=x)))
         f.addRow(QLabel("<b>Activities and dose</b>"))
@@ -4253,28 +4407,56 @@ class OptionsWindow(QMainWindow):
             or parse_time(e.text(), s.day) else
             self.statusBar().showMessage(f"{e.text()!r}: not a time — 18:00, or 1/10 9:00", 6000)))
         h.addWidget(e)
-        f.addRow("Activities (Bq) at", rt)
+        row("Activities (Bq) at", ("ref_rule",), rt)
         c = QCheckBox("taken off the injected activity")
         c.setChecked(s.subtract_tail)
         c.setToolTip("The tail vial, or the tail typed on an animal card (that wins)")
         c.toggled.connect(lambda on: self._rule(subtract_tail=on))
-        f.addRow("Injection site (tail)", c)
+        row("Injection site (tail)", ("subtract_tail",), c)
+        isos = list(dict.fromkeys([a.isotope for a in s.animals if a.isotope]
+                                  + list(s.half_lives)))
+        if isos:
+            hb = QWidget()
+            hh = QHBoxLayout(hb)
+            hh.setContentsMargins(0, 0, 0, 0)
+            for iso in isos:
+                key = next((k for k in s.half_lives if _study._canon(k) == _study._canon(iso)),
+                           iso)
+                n = QDoubleSpinBox()
+                n.setKeyboardTracking(False)
+                n.setRange(0, 1e7)
+                n.setDecimals(5)
+                n.setFixedWidth(100)
+                n.setValue((s.hl_of(iso) or 0) / 3600)
+                n.setToolTip("The half-life this study decay-corrects with, saved with it. A new "
+                             "study takes Options › Isotopes'; a counter file that says another "
+                             "is offered when it is read")
+                n.editingFinished.connect(lambda n=n, key=key: n.value() > 0 and abs(
+                    n.value() * 3600 - (s.hl_of(key) or 0)) > 1e-3 and self._rule(
+                    half_lives={**s.half_lives, key: n.value()}))
+                hh.addWidget(QLabel(iso))
+                hh.addWidget(n)
+                hh.addWidget(QLabel("h"))
+            hh.addStretch(1)
+            row("Half-lives", (), hb)
         v.addLayout(f)
         say = QLabel(RULES_SAID)                 # here: a form row does not grow a wrapped label
         say.setWordWrap(True)
         say.setStyleSheet("color:#8d8d8d;")
         v.addWidget(say)
         own = sorted({tuple(x[:2]) for x in s.chosen})
-        h = QHBoxLayout()
-        if own:
+        if own:                                  # a line of its own: the buttons fit below
+            h = QHBoxLayout()
             lab = QLabel(f"{len(own)} cell(s) with their own pick (Results ▸ side panel) — "
                          "they keep it whatever the rules")
             lab.setStyleSheet("color:#8d8d8d;")
             h.addWidget(lab)
             h.addWidget(AnimalCard._link("drop them", "Every cell back to the rules (Ctrl+Z "
                                          "undoes)", lambda: self._rule(chosen=[])))
+            h.addStretch(1)
+            v.addLayout(h)
+        h = QHBoxLayout()
         h.addStretch(1)
-        differ = [k for k in self.DEFAULTED if getattr(s, k) != PREFS[k]]
         b = QPushButton("Make these the defaults")
         b.setToolTip("New studies start with these rules")
         b.setEnabled(bool(differ))
@@ -5095,6 +5277,10 @@ class ReportWindow(QMainWindow):
 
     def refresh(self):
         self.view.setMarkdown(report.to_markdown(self._sections(), self._title()))
+        root = self.view.document().rootFrame()  # a table as wide as the page drew its
+        f = root.frameFormat()                   # border 2 px past it: a sideways bar
+        f.setRightMargin(f.leftMargin() + 8)
+        root.setFrameFormat(f)
 
     @busy("Writing the report…")
     def write(self, path: Path):
@@ -5476,7 +5662,9 @@ class MainWindow(QMainWindow):
         one's own left empty goes."""
         every = (every or PREFS["field_all"]) and key != "note"
         for a in self.study.animals if every else [animal]:
-            if key not in CARD_KEYS and on:
+            if _EV_SEP in key:                   # a procedure's: it lives in the procedure
+                pass
+            elif key not in CARD_KEYS and on:
                 a.extra.setdefault(_xkey(a, key), "")
             elif key not in CARD_KEYS and not _get(a, key).strip():
                 a.extra.pop(_xkey(a, key), None)
@@ -6242,8 +6430,8 @@ class MainWindow(QMainWindow):
         if "sources" in PREFS["tissue_note"] and res.cells:
             pick = "one counting round" if st.pick_count.startswith("round:") else \
                 COUNT_RULES.get(st.pick_count, "").replace("auto — ", "")
-            say.append(f"activity: {pick} (target range: dead time ≤ {st.dt_max:g}, ≥ "
-                       f"{st.min_counts:g} {BASES.get(st.min_basis)}), window {st.window or 'auto'}; mass: "
+            say.append(f"activity: {pick} (target range {_study.range_text(st, False)}), window "
+                       f"{st.window or 'auto'}; mass: "
                        f"filled − empty tube, {MASS_RULES[st.mass_rule]}"
                        + ("; values typed by hand win" if st.manual else "")
                        + ". Options › Results changes these; the Results' side panel, one "
@@ -7084,6 +7272,17 @@ class MainWindow(QMainWindow):
                         f"~{sg['mg']:.0f} mg more on the day than when weighed again, the "
                         f"activity unchanged ({', '.join(sg['tissues'][:5])}) — use the later "
                         "weighing for these cells")
+            elif "empty" in sg:
+                a = self.study.animal(sg["empty"][0])
+                text = (f"{a.label if a else sg['empty'][0]} / {sg['empty'][1]}: "
+                        f"{sg['mg']:.1f} mg and counting background"
+                        + (f" ({sg['counts']:,.0f} counts)" if sg["counts"] is not None else "")
+                        + " — an empty tube: mark it so (no value, no flag; Results ▸ side "
+                          "panel undoes it)")
+            elif "half_life" in sg:
+                iso, fh, sh = sg["half_life"]
+                text = (f"{iso}: the counter files decay-correct with a half-life of {fh:g} h, "
+                        f"this study with {sh:g} h — use the files' (Options › Rules shows it)")
             else:
                 text = ("The control tubes changed between their empty and filled weighings ("
                         + ", ".join(f"{_short(n)[-15:]} {mg:+.1f} mg" for n, mg in sg["drift"])
@@ -7093,10 +7292,17 @@ class MainWindow(QMainWindow):
             c.setStyleSheet("QCheckBox{padding:3px;}")
             ticks.append((sg, c))
             v.addWidget(c)
-        why = QLabel("A like amount on every small tube of an animal is no tissue: cold tubes "
-                     "read heavy, or water on the outside, gone since. The control tubes, "
-                     "weighed empty then filled with nothing put in, should not change. All of "
-                     "it is in the log; the Results' side panel shows every weighing.")
+        why = QLabel(" ".join(x for k, x in (
+            ("picks", "A like amount on every small tube of an animal is no tissue: cold tubes "
+                      "read heavy, or water on the outside, gone since."),
+            ("drift", "The control tubes, weighed empty then filled with nothing put in, "
+                      "should not change."),
+            ("empty", "Under ~2 mg the balance reads about nothing, and counts under 3 σ of "
+                      "the background are no activity: a tube with nothing in it."),
+            ("half_life", "The counter decay-corrects its Bq to its own reference time with "
+                          "its half-life; the study takes them on with its own.")) if any(
+            k in sg for sg in new)) + " All of it is in the log; the Results' side panel "
+            "shows every counting and weighing.")
         why.setWordWrap(True)
         why.setStyleSheet("color:#8d8d8d;")
         v.addWidget(why)
@@ -7118,6 +7324,11 @@ class MainWindow(QMainWindow):
                     chosen = [x for x in chosen if x[:3] not in keys] + \
                         [list(p) for p in sg["picks"]]
                     fields["chosen"] = chosen
+                elif "empty" in sg:
+                    fields["empty"] = fields.get("empty", list(self.study.empty)) + [sg["empty"]]
+                elif "half_life" in sg:
+                    fields["half_lives"] = {**fields.get("half_lives", self.study.half_lives),
+                                            sg["half_life"][0]: sg["half_life"][1]}
                 else:
                     fields["drift_fix"] = "scale"
                 self.log("applied: " + c.text()[:90], "✎", "edits")
@@ -7267,6 +7478,7 @@ class MainWindow(QMainWindow):
                 return False
             self._path = Path(path)
         self._read_runs()
+        self.study.keep_half_lives()             # it reproduces whatever Options say later
         self.study.embedded = {s.path: hidex.pack(self.runs[s.path]) for s in self.study.sources
                                if s.path in self.runs} if PREFS["embed"] else {}
         try:

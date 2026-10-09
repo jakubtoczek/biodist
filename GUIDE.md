@@ -64,13 +64,12 @@ was made. Everything is kept in one study file.
 - The table shows, for each animal, the mass and activity in use.
 
 **Results**
-- %IA/g, %IA, SUV, Bq/g (kBq/g, MBq/g), Bq (kBq, MBq, or MBq/kBq as the tissue table),
-  mass (g or mg), counts, CPM, dead time, and where each value
-  comes from.
+- %IA/g, %IA, SUV, Bq/g (kBq/g, MBq/g), Bq (kBq, MBq), mass (g or mg), counts, CPM, dead
+  time, and where each value comes from.
 - Rows for the injected activity, the activity at the SPECT / PET start, the tail, the body
   weight, the sum of the tissues.
-- Cells tinted by what looks off (no mass, at background, dead time, low counts, measures
-  that disagree, out of the expected range).
+- Cells tinted by what looks off (no mass, at background, under or over the valid range,
+  measures that disagree, out of the expected range).
 - Click a cell: every counting and weighing of it side by side, with its flags; click another
   (or pick another energy window) and Apply to use it for that cell — or for all the selected.
 - Copy to Excel in one click, export `.xlsx` / `.csv`; choose and rename the animals and
@@ -80,9 +79,11 @@ was made. Everything is kept in one study file.
 - Which energy window, which counting when a vial was counted several times, which weighing
   when a tube was weighed several times — saved with the study, so it reproduces.
 - A validity range and a target range for countings: a bottom (counts, CPM or the activity
-  in the vial), a top (CPM or activity) and a dead time.
+  in the vial) and a top (the dead time, or counts, CPM, activity).
 - Measures that do not agree with the others (the consensus) are flagged, and can be left out.
 - Control tubes can correct every weighing after the tares for balance drift.
+- A tube that weighs about nothing and counts background is offered to be marked empty.
+- The study keeps its half-lives; a counter file that decay-corrects with another one is said.
 - Cross-checks: a count file placed nowhere, rounds that each miss an animal the other
   counted, two files reading the same vials placed on different animals.
 
@@ -167,13 +168,16 @@ A card per animal. The fields:
   the card.
 - **+ loss / note**: activity that did not go in (a cotton on the tail…), taken off the
   injected activity; notes on the biodistribution.
-- **Procedures** — **+ procedure** and a kind. Imaging and surgery add their anaesthesia as a
-  procedure of its own; SPECT/CT typed as one modality becomes two sessions. Each kind opens
-  with its fields (Options › Procedures); **+ field** adds one to that procedure only.
-  Time fields take a clock time or a time after the injection; day fields a date, an age or
-  D-14 — the others are worked out in grey.
-- **▦ every animal**: a table, a column per animal. Select several cells and type to fill
-  them all (a comma list is dealt out); Ctrl+V pastes a row or a block copied from Excel.
+- **Procedures** — **+ procedure** and a kind. The first imaging (and a surgery) adds its
+  anaesthesia as a procedure of its own — a CT added to a SPECT shares it; SPECT/CT typed as
+  one modality becomes two sessions. Each kind opens with its fields (Options › Procedures);
+  **+ field** adds one to that procedure only. A procedure's field has its **copy ▾** and
+  **on card** too (the card shows it as *imaging · start*). Time fields take a clock time or
+  a time after the injection; day fields a date, an age or D-14 — the others are worked out
+  in grey.
+- **▦ every animal**: a table, a column per animal; **on card** and **copy ▾** beside it, on
+  the right, row for row. Select several cells and type to fill them all (a comma list is
+  dealt out); Ctrl+V pastes a row or a block copied from Excel.
 - ◀ ▶ and the list switch animals; Ctrl+Z undoes.
 
 ### Tissues
@@ -241,12 +245,16 @@ tubes that moved), BioDist offers the fix once, ready to apply.
 
 Ctrl+R, or the green *Results* button.
 
-- **data**: %IA/g, %IA, SUV, Bq/g, kBq/g, MBq/g, Bq, kBq, MBq, MBq or kBq (as the tissue
-  table: its digits by its size, decimals "–"), mass (g, mg), counts, CPM, dead time, activity
-  source, mass source. **decimals**: per unit, kept.
+- **data**: %IA/g, %IA, SUV, Bq/g, kBq/g, MBq/g, Bq, kBq, MBq, mass (g, mg), counts, CPM,
+  dead time, activity source, mass source (Options › Results window: which ones the list
+  offers). **decimals**: per unit, kept; Bq and counts are whole (26,100,000 Bq).
 - **show**: rows under the tissues — tail and standards, blanks, injected activity, activity
   in the animal at the SPECT / PET start, tail (%IA), body weight, sum of tissues (%IA).
-- **highlight**: which problems tint a cell (red: no usable value; amber: worth a look).
+- **highlight**: which problems tint a cell — red, no usable value: *mass <= 0*, *no mass*,
+  *at background* (net counts under 3 σ, the detection limit); amber, worth a look: *activity
+  in a blank* (1,000 counts or more), *under* / *over the valid range* (the counting in use,
+  none of the vial's being valid), *counts differ* / *weighings differ*, *out of the expected
+  range* (Options › Rules ▸ Expected per tissue). Hover an item for what it means.
 - **▤**: animals and tissues shown, their order and names.
 - **⧉** copies the whole table; Ctrl+C the selection; **Export…** (Ctrl+E) `.xlsx` / `.csv`.
 
@@ -263,9 +271,12 @@ Ctrl+R, or the green *Results* button.
   stays on it). A cell without that row, or that would not change, keeps what it had.
 - The table shows the result at once (green, bold); **Apply** keeps it for those cells (shown
   in italics after); another cell or closing drops it. **Back to the rules** removes a cell's
-  own choice. **see the rules**: Options › Rules; Options › Results window: a row per window,
-  or a click that
-  always adds or removes, can be set instead.
+  own choice (and ticks not applied); greyed, *follow the rules ✓*: the cells have none.
+  **see the rules**: Options › Rules; Options › Results window: a row per window, or a click
+  that always adds or removes, can be set instead.
+- **empty tube**: ticked, the cells have no value and no flag — nothing was collected in the
+  tube. BioDist offers it for a tissue weighing under ~2 mg that counts background (net under
+  3 σ); the report's checks list it.
 
 ---
 
@@ -311,16 +322,21 @@ Export / Import / Reset to defaults.
 | Log | what it records; saved per session or appended, where, under which name |
 
 **Options › Rules**, saved with each study (*Make these the defaults* for new
-studies):
+studies). A change applies at once; **●** marks a rule that is not the defaults (hover: what
+they are) — *Back to the defaults* takes them all:
 - **Countings**
   - **Counting window**: the widest (one isotope) or the photopeak, or one by name.
   - **Typed by hand**: an activity typed in the tissue table (dose calibrator) wins over the
     counter, or is not used (still in the side panel, to pick for a cell).
-  - **Ranges in**: the bottom of both ranges in counts (the default), CPM, or the activity
-    in the vial as counted (Bq, kBq, MBq); the top in CPM or activity.
-  - **Valid**: enough counts and a dead time not too high — others are flagged and used only
-    when nothing better exists. **Target range**: the same fields, stricter —
-    what the rule prefers among the valid ones.
+  - **Ranges in**: the bottom and the top of both ranges, from one list — counts (in the
+    window in use: the default bottom), counts (whole spectrum: the file's widest window),
+    CPM, CPM (whole spectrum), Bq, kBq, MBq (the activity in the vial as counted); the top
+    also the dead time (the default). Counts tell how sure a value is (a bottom); the dead time
+    or the whole spectrum's CPM how busy the counter was (a top). One top: any but the dead
+    time means no dead-time bound.
+  - **Valid**: a bottom and a top (0: none) — others are flagged and used only when nothing
+    better exists. **Target range**: the same two, stricter — what the rule prefers among the
+    valid ones.
   - **Counted more than once**: the first, the last, the most counts, all combined, one round.
   - **Consensus**: leave out a counting out of it; two agree within a % or σ.
   - **Several countings**: weighted by their counts, or their mean.
@@ -333,7 +349,9 @@ studies):
     corrected by its own file's control tubes (scale / offset), or not. The side panel's mass
     table shows each file's control-tube change (⚖ mg; grey when not applied).
 - **Activities and dose**: activities at each injection or one time; tail taken off the
-  injected activity.
+  injected activity; **half-lives** — the study's own, saved with it (a new study takes
+  Options › Isotopes'). A counter file decay-correcting with another half-life is offered:
+  use the file's.
 
 ---
 
@@ -343,7 +361,7 @@ studies):
 file, using the counting efficiency of each energy window (Bq = CPM / 60 / efficiency). A
 Wizard2 gives CPM, made Bq with the efficiency typed in Data sources; when its protocol
 decay-corrected the CPM, the time it corrected them to is worked out from the vials and
-undone (the log says so). BioDist decay-corrects it with the animal's isotope to each animal's injection time (or one
+undone (the log says so). BioDist decay-corrects it with the half-life of the animal's isotope (the study's own) to each animal's injection time (or one
 time for all). **%IA/g does not depend on that time** — dose and tissue are decayed alike.
 
 **Injected activity** = syringe full − syringe empty − other losses − tail (the card's, else

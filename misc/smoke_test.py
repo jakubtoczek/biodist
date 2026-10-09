@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QComboBox, QLabel, QLineEdit, QMenu, QPushButton, QTableWidget, QToolButton,
+    QApplication, QCheckBox, QComboBox, QLabel, QLineEdit, QMenu, QPushButton, QTableWidget,
+    QToolButton,
 )
 
 from biodist import report  # noqa: E402
@@ -94,9 +95,10 @@ kidneys = next(row for row in grid if row[0] == "Kidneys")
 assert kidneys[1].startswith("143."), kidneys
 r.set_unit("suv")
 assert next(row for row in r._grid() if row[0] == "Kidneys")[1].startswith("28."), "SUV"
-r.set_unit("act")                                    # as the tissue table: its own digits
-assert r.s_digits.text() == "–" and not r.s_digits.isEnabled(), r.s_digits.text()
-assert next(row for row in r._grid() if row[0] == "Kidneys")[1].endswith(" MBq")
+assert "kbq" in r._units and "act" not in r._units, r._units   # kBq offered from the start
+r.set_unit("bq")                                     # whole, grouped: 10,850,000
+kid = next(row for row in r._grid() if row[0] == "Kidneys")[1]
+assert "." not in kid and "," in kid and not r.s_digits.isEnabled(), kid
 r.set_unit("kbq")
 kid = next(row for row in r._grid() if row[0] == "Kidneys")[1]
 assert r.s_digits.isEnabled() and "." in kid and float(kid.replace(",", "")) > 1000, kid
@@ -447,6 +449,29 @@ w.study.animals[-1].events[0]["kV"] = ""
 # an imaging session brings its anaesthesia, a procedure of its own; SPECT/CT is two sessions
 al = w.study.animals[-1]
 assert [e["kind"] for e in al.events] == ["imaging", "anaesthesia"], al.events
+w.animal_win._add_event("imaging")                   # a CT after the SPECT: one anaesthesia
+assert [e["kind"] for e in al.events] == ["imaging", "anaesthesia", "imaging"], al.events
+al.events.pop()
+w.animal_win._redraw()
+app.processEvents()
+app.processEvents()
+# a procedure's field: copy ▾ and "on card" like any other
+aw = w.animal_win
+rowof = {lab.text().strip(): lab for lab in aw.scroll.widget().findChildren(QLabel)}
+g = aw.scroll.widget().layout()
+r = g.getItemPosition(g.indexOf(rowof["modality"]))[0]
+assert isinstance(g.itemAtPosition(r, 2).widget(), QToolButton) and \
+    isinstance(g.itemAtPosition(r, 3).widget(), _app.QCheckBox), "copy, then the tick"
+kept0 = w.study.animals[0].events[:]
+w.study.animals[0].events.clear()
+al.events[0]["modality"] = "SPECT"
+aw._copy([("ev", "imaging", 0, "modality")], [w.study.animals[0]], al, "imaging modality")
+assert w.study.animals[0].events == [{"kind": "imaging", "modality": "SPECT"}], \
+    w.study.animals[0].events
+w.study.animals[0].events[:] = kept0
+al.events[0].pop("modality")
+app.processEvents()
+app.processEvents()
 combo = next(c for c in w.animal_win.scroll.widget().findChildren(QComboBox)
              if "SPECT" in [c.itemText(i) for i in range(c.count())])
 root = w.animal_win.scroll.widget()
@@ -479,19 +504,35 @@ w.animal_win.sheet.item(r, len(w.study.animals) + w.animal_win.SC - 1).setText("
 app.processEvents()
 assert [e for e in w.study.animals[-1].events if e["kind"] == "imaging"][1]["start"] == "13:30"
 assert w.res.injected_bq["107"] < before_loss, "the loss comes off"
-# the table view: on card and copy per field; copy lists every animal, the source greyed
-sh = w.animal_win.sheet
+# the table view: copy and on card per field, after the last animal (the one-animal view's
+# order), animals 150 px, the window as wide as the table; copy lists every animal, the
+# source greyed. A procedure's field too: ticked, it is on the cards
+sh, n_an = w.animal_win.sheet, len(w.study.animals)
+cp, oc = n_an + 1, n_an + 2
+assert sh.columnCount() == n_an + 3 and sh.horizontalHeaderItem(oc).text() == "on card"
+assert all(sh.columnWidth(c) == 150 for c in range(1, cp)), "150 px an animal"
+assert w.animal_win.width() >= min(w.animal_win._table_width(), w.animal_win.screen()
+    .availableGeometry().width() - 40), "no side scrolling, the screen allowing"
 rw = next(r for r in range(sh.rowCount()) if sh.item(r, 0).text() == "body weight (g)")
-assert sh.cellWidget(rw, 1).findChild(_app.QCheckBox) is not None
+assert sh.cellWidget(rw, oc).findChild(_app.QCheckBox) is not None
+tick = sh.cellWidget(r, oc).findChild(_app.QCheckBox)   # imaging 2 · start
+tick.click()
+app.processEvents()
+app.processEvents()
+assert all(a.show.get("imaging 2 · start") for a in w.study.animals), "on every card"
+card = next(c for c in w.cards if c.a is w.study.animals[-1])
+assert "imaging 2 · start" in card.fields, list(card.fields)
 if len(w.study.animals) > 1:
     sh.setCurrentCell(rw, w.animal_win.SC + 1)      # the second animal's cell: copied from it
-    menu = sh.cellWidget(rw, 2).menu()
+    menu = sh.cellWidget(rw, cp).menu()
     menu.aboutToShow.emit()
     ticks = [x for x in menu.actions() if x.isCheckable()]
     assert len(ticks) == len(w.study.animals) and not ticks[1].isEnabled() and \
         ticks[0].isEnabled(), [x.text() for x in ticks]
 w.study.animals[-1].events.clear()
 w.study.animals[0].losses.clear()
+for a in w.study.animals:
+    a.show.pop("imaging 2 · start", None)
 w.animal_win.close()
 
 # Options: a window of its own, exported and imported as JSON
@@ -535,7 +576,7 @@ rng = page.findChild(QTableWidget)
 rng.item(0, 2).setText("2")                          # 2.61 mg: over
 app.processEvents()
 app.processEvents()
-assert any(f.startswith("out of range") for f in w.res.cell("107", "Thyr").flags)
+assert any(f.startswith("out of the expected range") for f in w.res.cell("107", "Thyr").flags)
 ow._undo(True)                                       # the study's step, on this page
 app.processEvents()
 assert w.study.ranges == [["Thyr", 0.0, 0.0, 0.0, 0.0]], w.study.ranges
@@ -547,6 +588,19 @@ app.processEvents()
 assert w.study.combine == "mean" and PREFS["combine"] == "weighted", "the study's, not Options'"
 w.study.combine, w.study.ranges = "weighted", []
 w._sync()
+app.processEvents()
+# one top a range: the dead time, or counts / CPM / Bq — then no dead time; ● where the
+# study's rules are not the defaults
+top = [c for c in page.findChildren(QComboBox) if c.currentText() == "dead time"][-1]
+top.activated.emit(list(_app.TOPS).index("kbq"))
+app.processEvents()
+app.processEvents()
+assert (w.study.max_basis, w.study.valid_dt, w.study.dt_max) == ("kbq", 0, 0), w.study.max_basis
+assert any(x.text().startswith("Ranges in") and "●" in x.text()
+           for x in page.findChildren(QLabel)), "not the defaults: said"
+ow._undo(True)
+app.processEvents()
+assert w.study.max_basis == "dt" and w.study.valid_dt == PREFS["valid_dt"], w.study.max_basis
 ow.close()
 
 # 260903 whole: tumour and muscle weighed and counted straight after euthanasia (their own
@@ -665,6 +719,18 @@ back = next(b for b in res3.panel.widget().findChildren(QPushButton)
 back.click()
 spin()
 assert not any(x[:2] == ["107", "Liver"] for x in w3.study.chosen), w3.study.chosen
+res3._fill_panel()
+assert any(b.text() == "follow the rules ✓" and not b.isEnabled()
+           for b in res3.panel.widget().findChildren(QPushButton)), "nothing of its own"
+# a tube found empty: ticked in the panel, no value and no flag — said "empty tube"
+empty = next(c for c in res3.panel.widget().findChildren(QCheckBox)
+             if c.text().startswith("empty tube"))
+empty.click()
+spin()
+assert w3.study.empty == [["107", "Liver"]] and res3._grid()[liver + 1][1] == "empty tube", \
+    res3._grid()[liver + 1]
+res3.data_changed.emit({"empty": []})
+spin()
 # several cells, round 1 in the other window: the cells using it take it there, the kidneys
 # keep their dose-calibrator reading, the others what they had — and get no pick
 w3.study.manual.append(Manual("107", "Kidneys", mbq=10.85, time="16:46"))

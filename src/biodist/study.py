@@ -665,7 +665,12 @@ DT_VALID = 1.5           # ... past which it is not valid: flagged, used only if
 MIN_COUNTS = 10000       # a counting aimed at (±1 %); fewer is still taken when it is all there is
 VALID_COUNTS = 500       # ... under which it is not valid: ±8 % in the wide window, its
 #                          background ~180 counts — misc/extra/261008_validity_threshold.md
-BASES = {"counts": "counts", "cpm": "CPM", "bq": "Bq", "kbq": "kBq", "mbq": "MBq"}   # ranges in
+BASES = {"counts": "counts", "counts_all": "counts (whole spectrum)", "cpm": "CPM",
+         "cpm_all": "CPM (whole spectrum)", "bq": "Bq", "kbq": "kBq", "mbq": "MBq"}
+#        a range's bounds: counts and CPM in the counting window (or the file's widest one,
+#        `widest`), or the activity in the vial as counted
+TOPS = {**BASES, "dt": "dead time"}     # a range's top: one of these (0: none)
+EMPTY_TUBE = "empty tube"               # a cell marked so (Study.empty): no value, no flag
 BLANK_COUNTS = 1000      # a blank vial counting this many is not empty (background: 100-600)
 RECOUNT_COUNTS = 1000    # vials compared to tell a recount (±3 %, under its 10 % test)
 TUBE_OUT_G = 0.5         # a filled weighing this much under its empty: a tube taken out
@@ -845,7 +850,9 @@ class Study:
     window_rule: str = "wide"                    # one isotope: widest window, else its peak
     min_counts: float = MIN_COUNTS               # the target range: this many counts, …
     min_basis: str = "counts"                    # ... in BASES (the validity's too)
-    max_basis: str = "cpm"                       # the ranges' tops in BASES (not counts)
+    max_basis: str = "dt"                        # the ranges' tops in TOPS: "dt" -> valid_dt /
+    #                                              dt_max are the tops, valid_max / cpm_max 0;
+    #                                              else those, the dead times 0 (0: no bound)
     valid_counts: float = VALID_COUNTS           # valid: this many at least, at most …
     valid_max: float = 0                         # … this (0: no bound), a dead time …
     valid_dt: float = DT_VALID                   # … ≤ this — else flagged, and used only when
@@ -896,6 +903,10 @@ class Study:
     #             Hidex set to 1) or all of them when file_eff is off
     ranges: list[list] = field(default_factory=list)   # [tissue, mg min, mg max, %IA/g min,
     #                                              max] expected; 0 = no bound — flags only
+    empty: list[list[str]] = field(default_factory=list)   # [animal, tissue]: a tube found
+    #                                              empty (nothing collected): no value
+    half_lives: dict[str, float] = field(default_factory=dict)   # isotope -> hours, the
+    #                                              study's own (Options' until it is saved)
     embedded: dict[str, dict] = field(default_factory=dict)  # path -> the file's data, packed
     outside_edit = False                         # loaded: changed since saved (not a field)
 
@@ -940,6 +951,7 @@ class Study:
         if d.get("pick_count") in ("mean", "median", "pooled"):   # 2026.10.6.1: "all",
             d.setdefault("combine", "weighted" if d["pick_count"] == "pooled" else "mean")
             d["pick_count"] = "all"                  # combined as `combine` says
+        one_top(d)
         s = Study(**{k: v for k, v in d.items() if k in Study.__dataclass_fields__
                      and k not in ("animals", "tissues", "sources", "manual")})
         s.animals = [Animal.from_dict(a) for a in d.get("animals", [])]
@@ -1060,7 +1072,19 @@ class Study:
 
     def hl_for(self, aid: str) -> float:
         a = self.animal(aid)
-        return (half_life_s(a.isotope) if a else None) or HALF_LIFE_S["99mTc"]
+        return (self.hl_of(a.isotope) if a else None) or HALF_LIFE_S["99mTc"]
+
+    def hl_of(self, isotope: str) -> float | None:
+        """An isotope's half-life (s): the study's own, else Options'."""
+        own = next((h for k, h in self.half_lives.items() if _canon(k) == _canon(isotope)), None)
+        return own * 3600.0 if own else half_life_s(isotope)
+
+    def keep_half_lives(self):
+        """The half-lives its animals' isotopes take, kept in the study (saved with it)."""
+        for iso in {a.isotope for a in self.animals if a.isotope}:
+            if not any(_canon(k) == _canon(iso) for k in self.half_lives) and \
+                    (h := half_life_s(iso)):
+                self.half_lives[iso] = round(h / 3600.0, 9)   # as typed, not 6.0071799…
 
     def window_for(self, run: hidex.Run) -> str | None:
         """The full window name in `run` for the study's window choice; with none, by rule:
@@ -1075,11 +1099,8 @@ class Study:
         isos = {_canon(a.isotope) for a in self.animals if a.isotope}
         own = [w for w in run.windows if _canon(w.split("_")[0]) in isos] or run.windows
 
-        def width(w):
-            n = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", w.split("_", 1)[-1])]
-            return n[-1] - n[0] if len(n) >= 2 else 0
         wide = len(isos) <= 1 and self.window_rule == "wide"
-        return (max if wide else min)(own, key=width)
+        return (max if wide else min)(own, key=_width)
 
     def eff_for(self, run: hidex.Run, w: str) -> tuple[float | None, bool]:
         """(counts per decay, from the file?) for a window of a file: the file's own unless
@@ -1179,6 +1200,8 @@ class Result:
         'mean r1+r2'; 'weight − tare', 'count+weight r2 − tare', 'mean of weight, r2 − tare',
         'typed'."""
         c = self.cell(aid, tissue)
+        if c.bq_src == EMPTY_TUBE:
+            return EMPTY_TUBE
         if what == "activity":
             if c.bq_src == "dose calibrator":
                 return "calibrator"
@@ -1289,6 +1312,7 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
     ref = study.reference(runs)
     cells: dict[tuple[str, str], Cell] = {}
     notes: list[str] = []
+    suggest: list[dict] = []              # what to offer the user: key, text, picks / fields
 
     for s in live:
         if s.path and s.path not in runs:
@@ -1363,6 +1387,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
     covered: dict[str, set] = {}                 # count file -> the cells it counted
     spans: dict[str, tuple] = {}
     no_eff: dict[str, list[str]] = {}            # counter|window -> files with no efficiency
+    hl_off: dict[str, tuple] = {}                # isotope -> (as the file names it, file's h,
+    #                                              the study's h): the two half-lives differ
     for s in live:
         run = runs.get(s.path)
         if not run or s.kind in ("empty", "filled"):
@@ -1374,7 +1400,10 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         if eff is None:
             no_eff.setdefault(f"{run.counter}|{w}", []).append(Path(s.path).name)
         norm = run.normalized_to if own else None    # the counter's Bq at its reference
-        mapping = s.mapping(run)
+        iso = w.split("_")[0]
+        if (fh := run.half_life_s.get(w)) and (sh := study.hl_of(iso)) and abs(fh / sh - 1) > 1e-5:
+            hl_off.setdefault(_canon(iso), (iso, round(fh / 3600, 9), round(sh / 3600, 9)))
+        mapping, whole = s.mapping(run), widest(run)
         for slot in run.slots:
             key = mapping.get(slot.key)
             if not key or not key[0] or w not in (slot.bq if own else slot.cpm):
@@ -1388,8 +1417,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                 continue
             bq = decay(slot.bq[w] if own else slot.cpm[w] / 60 / eff, t_from, ref, hl)
             cell(key).alts.append((Path(s.path).name, bq, slot.dead_time,
-                                   size(slot, w, eff, study.min_basis), slot.time, rsd(slot, w),
-                                   size(slot, w, eff, study.max_basis)))
+                                   size(slot, w, eff, study.min_basis, whole), slot.time,
+                                   rsd(slot, w), size(slot, w, eff, study.max_basis, whole)))
             cell(key).raw[Path(s.path).name] = (slot.counts.get(w), slot.cpm.get(w))
             covered.setdefault(Path(s.path).name, set()).add(key)
             if slot.time:
@@ -1405,9 +1434,17 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                         Path(s.path).name, decay(slot.bq[x] if own2 else slot.cpm[x] / 60 / e2,
                                                  (run.normalized_to if own2 else None)
                                                  or slot.time, ref, hl),
-                        slot.dead_time, size(slot, x, e2, study.min_basis), slot.time, short,
+                        slot.dead_time, size(slot, x, e2, study.min_basis, whole), slot.time,
+                        short,
                         slot.cpm.get(x), x == w, slot.counts.get(x), rsd(slot, x),
-                        size(slot, x, e2, study.max_basis)))
+                        size(slot, x, e2, study.max_basis, whole)))
+
+    for c_iso, (iso, fh, sh) in hl_off.items():
+        mine = next((k for k in list(study.half_lives) + [a.isotope for a in study.animals]
+                     if _canon(k) == c_iso), iso)
+        suggest.append({"key": f"hl:{c_iso}:{fh:g}", "half_life": [mine, fh, sh]})
+        notes.append(f"{mine}: the counter files decay-correct with a half-life of {fh:g} h, "
+                     f"the study with {sh:g} h — Options › Rules ▸ half-lives")
 
     for k, files in no_eff.items():
         counter, w = k.split("|", 1)
@@ -1475,7 +1512,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         return [x for x in c.alts if is_valid(x, study, x[6])]
 
     def in_target(c, x):
-        return ((x[2] or 1.0) <= study.dt_max and (x[3] is None or x[3] >= study.min_counts)
+        return ((not study.dt_max or (x[2] or 1.0) <= study.dt_max)
+                and (x[3] is None or x[3] >= study.min_counts)
                 and not (study.cpm_max and (x[6] or 0) > study.cpm_max))
 
     def rank(x):
@@ -1526,7 +1564,6 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
     picked = {(x[0], x[1], x[2]): x[3:] for x in study.chosen}   # what -> the files picked
     w_rank = {"filled": 2, "total": 1, "direct": 0}
     excess: dict[str, list[tuple]] = {}   # animal -> (tissue, day-of − later mg, later file)
-    suggest: list[dict] = []              # what to offer the user: key, text, picks / fields
     lonely: dict[str, int] = {}
     light: dict[str, list[str]] = {}      # tissue -> where a tube weighed less than empty
     for key, c in cells.items():
@@ -1690,23 +1727,46 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
                     f"count+weight r{i + 1}" if i is not None else _stem(key[1])[-15:]
             return "tare " + _stem(key[1])[-6:]
         return name
+    empty = {tuple(x[:2]) for x in study.empty}
     for (aid, tname), c in cells.items():
         t = study.tissue(tname)
+        if (aid, tname) in empty:                # found empty: no value, nothing to flag
+            c.bq = c.mass_g = c.dead_time = c.counts = None
+            c.bq_src = c.mass_src = EMPTY_TUBE
+            c.bq_used, c.mass_used, c.flags = [], [], []
+            continue
+        # a tissue weighing about nothing and counting background (net under 3 σ, the
+        # detection limit): the tube holds nothing — 260923 C1 gall bladder, 1.3 mg, 191-214
+        # counts over a background of ~190
+        u = next((x for x in c.alts if x[0] == c.bq_src), None)
+        if t and t.role == "tissue" and c.mass_g is not None and c.mass_g * 1000 < max(
+                study.mass_tol_mg, 1) and c.bq is not None and (c.bq <= 0 or u and (
+                    u[5] or 0) > 1 / 3):
+            n = c.raw.get(c.bq_src, (None,))[0]
+            suggest.append({"key": f"empty:{aid}:{tname}", "empty": [aid, tname],
+                            "mg": c.mass_g * 1000, "counts": n})
+            notes.append(f"{aid}/{tname}: {c.mass_g * 1000:.1f} mg and counting background"
+                         + (f" ({n:,.0f} counts)" if n is not None else "") + " — an empty "
+                         "tube? Results ▸ side panel ▸ empty tube")
         if c.mass_g is not None and c.mass_g <= 0 and (not t or t.role != "blank"):
             c.flags.append("mass <= 0")
-        if c.bq is not None and c.bq <= 0 and (not t or t.role != "blank"):
+        # at background: nothing told from it — net counts under 3 σ (the detection limit),
+        # or none at all; the counter takes the background off, so ≤ 0 Bq happens
+        if c.bq is not None and (c.bq <= 0 or u and (u[5] or 0) > 1 / 3) and \
+                (not t or t.role != "blank"):
             c.flags.append("at background")
-        if t and t.role == "blank" and (c.counts or 0) >= BLANK_COUNTS:
-            c.flags.append("activity in a blank")
-        if c.dead_time and c.dead_time > study.valid_dt:
-            c.flags.append(f"dead time {c.dead_time:.2f}")
+        n = c.raw.get(c.bq_src, (None,))[0]      # counts as counted, whatever the range's unit
+        if t and t.role == "blank" and (n or 0) >= BLANK_COUNTS:
+            c.flags.append(f"activity in a blank: {n:,.0f} counts")
         if c.bq_src != "dose calibrator" and c.counts is not None and \
                 c.counts < study.valid_counts and (not t or t.role != "blank"):
-            c.flags.append(f"low counts: {c.counts:,.4g} {BASES.get(study.min_basis, '')}")
-        u = next((x for x in c.alts if x[0] == c.bq_src), None)
+            c.flags.append(f"under the valid range: {c.counts:,.4g} "
+                           f"{BASES.get(study.min_basis, '')}")
+        if c.dead_time and study.valid_dt and c.dead_time > study.valid_dt:
+            c.flags.append(f"over the valid range: dead time {c.dead_time:.2f}")
         if study.valid_max and u and (u[6] or 0) > study.valid_max:
             c.flags.append(f"over the valid range: {u[6]:,.4g} "
-                           f"{BASES.get(study.max_basis, '')}")
+                           f"{TOPS.get(study.max_basis, '')}")
         c.pairs = pairs_of(c, study, namer(c))
         used = [("count", *(u.rsplit("@", 1) if "@" in u else (u, c.rule_w.get(u, ""))))
                 for u in c.bq_used]
@@ -1716,8 +1776,8 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         if gaps := [g for u in c.mass_used for g in c.pairs.get(("mass", u), [])]:
             c.flags.append(f"weighings differ: {gaps[0]}" + (f" (+{len(gaps) - 1})"
                                                              if len(gaps) > 1 else ""))
-        if c.bq is not None and c.mass_g is None and (not t or t.role in ("tissue", "tail")):
-            c.flags.append("no mass")
+        if c.bq is not None and c.mass_g is None and (not t or t.role == "tissue"):
+            c.flags.append("no mass")                # a tail is %IA: no mass needed
 
     if drifted:
         suggest.append({"key": "drift:" + ",".join(n for n, _ in drifted), "drift": drifted})
@@ -1754,7 +1814,7 @@ def range_flags(study: Study, res: Result, ranges) -> None:
                                  rule[2], "mg"),
                                 (res.value(study, aid, tn, "pid_g"), rule[3], rule[4], "%IA/g")):
             if v is not None and (lo and v < lo or hi and v > hi):
-                c.flags.append(f"out of range: {v:.3g} {what} ({lo:g}–{hi:g})")
+                c.flags.append(f"out of the expected range: {v:.3g} {what} ({lo:g}–{hi:g})")
 
 
 def _avg(how: str, vals: list[float]) -> float:
@@ -1767,17 +1827,58 @@ def agree(a: float, b: float, study: Study) -> bool:
     return d <= study.mass_tol_mg or d <= study.mass_tol_pct / 100 * 1000 * min(abs(a), abs(b))
 
 
+def one_top(d: dict) -> dict:
+    """A range has one top since 2026.10.9, in max_basis — the dead time one of the choices.
+    Saved before with a CPM / Bq basis and a dead time: a CPM / Bq top set keeps it (no dead
+    time then), none set means the dead time (a study or the Options' defaults)."""
+    if d.get("max_basis", "dt") != "dt" and (d.get("valid_dt") or d.get("dt_max")):
+        if d.get("valid_max") or d.get("cpm_max"):
+            d["valid_dt"] = d["dt_max"] = 0
+        else:
+            d["max_basis"] = "dt"
+    return d
+
+
+def range_text(study: Study, valid: bool) -> str:
+    """The valid or the target range as said: '≥ 500 counts, dead time ≤ 1.5'."""
+    lo = study.valid_counts if valid else study.min_counts
+    dt = study.max_basis == "dt"
+    hi = (study.valid_dt if valid else study.dt_max) if dt else \
+        (study.valid_max if valid else study.cpm_max)
+    top = "" if not hi else f", dead time ≤ {hi:g}" if dt else \
+        f", ≤ {hi:g} {TOPS.get(study.max_basis, '')}"
+    return f"≥ {lo:g} {BASES.get(study.min_basis, '')}{top}"
+
+
 def is_valid(x: tuple, study: Study, top: float | None = None) -> bool:
     """A counting (src, Bq, dead time, its size in min_basis, …) enough counted and not too
     busy to be taken — `top` its size in max_basis, under the valid top: else flagged, and
-    used only when no other counting of the vial is valid."""
-    return ((x[2] or 1.0) <= study.valid_dt and (x[3] is None or x[3] >= study.valid_counts)
+    used only when no other counting of the vial is valid. A bound at 0 is none."""
+    return ((not study.valid_dt or (x[2] or 1.0) <= study.valid_dt)
+            and (x[3] is None or x[3] >= study.valid_counts)
             and not (study.valid_max and (top or 0) > study.valid_max))
 
 
-def size(slot: hidex.Slot, w: str, eff: float | None, unit: str) -> float | None:
-    """A counting's size in `unit` (BASES): counts or CPM as read, else the activity in the
-    vial while it was counted — CPM / 60 / efficiency, in Bq, kBq or MBq."""
+def _width(w: str) -> float:
+    """An energy window's width in keV, from its name ('⁹⁹ᵐTc_15-2047')."""
+    n = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", w.split("_", 1)[-1])]
+    return n[-1] - n[0] if len(n) >= 2 else 0
+
+
+def widest(run: hidex.Run) -> str | None:
+    """A file's widest window: its whole spectrum (15-2047 keV on the Hidex)."""
+    return max(run.windows, key=_width) if run.windows else None
+
+
+def size(slot: hidex.Slot, w: str, eff: float | None, unit: str,
+         whole: str | None = None) -> float | None:
+    """A counting's size in `unit` (TOPS): counts or CPM as read — in the window, or in the
+    whole spectrum (`whole`, the file's widest window) —, the dead time, else the activity in
+    the vial while it was counted — CPM / 60 / efficiency, in Bq, kBq or MBq."""
+    if unit == "dt":
+        return slot.dead_time
+    if unit.endswith("_all"):
+        unit, w = unit[:-4], whole or w
     if unit in ("counts", "cpm"):
         return (slot.counts if unit == "counts" else slot.cpm).get(w)
     cpm = slot.cpm.get(w)
@@ -2587,7 +2688,8 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert near.dead_time == 1.217 and not near.flags, near.flags
     s.valid_dt = DT_WARN
     near = compute(s).cell("107", "Liver")
-    assert near.dead_time == 1.217 and near.flags == ["dead time 1.22"], near.flags
+    assert near.dead_time == 1.217 and near.flags == ["over the valid range: dead time 1.22"], \
+        near.flags
     s.dt_max, s.valid_dt, s.pick_count = 1.5, DT_VALID, "auto"
     c2.kind = "ignored"                                  # kept in the study, left out
     assert len(compute(s).cell("107", "Liver").alts) == 1
@@ -2605,6 +2707,21 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert abs(pidg("Blood") - 0.28) < 0.01, pidg("Blood")
     assert abs(pidg("Thyr") - 2.55) < 0.02, pidg("Thyr")
     assert abs(recovery_pct(s, res, "107") - 39.9) < 0.5, recovery_pct(s, res, "107")
+    # a tube found empty: no value, no flag. The study's own half-life wins over Options',
+    # and one the counter files do not use is offered to be theirs
+    s.empty = [["107", "Liver"]]
+    e = compute(s)
+    assert e.cell("107", "Liver").bq is None and not e.cell("107", "Liver").flags
+    assert e.source_label("107", "Liver", "mass") == EMPTY_TUBE
+    s.empty, s.half_lives = [], {"Tc-99m": 6.0}
+    assert abs(s.hl_for("107") - 6.0 * 3600) < 1e-6
+    assert [(sg["half_life"][0], round(sg["half_life"][1], 5)) for sg in compute(s).suggest
+            if "half_life" in sg] == [("Tc-99m", 6.00718)]
+    s.half_lives = {}
+    s.keep_half_lives()
+    assert s.half_lives == {"99mTc": 6.00718} and not any(
+        "half_life" in sg for sg in res.suggest), s.half_lives
+    s.half_lives = {}
 
     # SUV = (Bq/g in tissue) / (Bq/g whole body); with 19.6 g and 143 %IA/g the kidneys sit ~28
     assert abs(res.value(s, "107", "Kidneys", "suv") - pidg("Kidneys") * 19.6 / 100) < 1e-6
@@ -2812,7 +2929,7 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert not got.cell("1", "Thyroids").flags
     assert same_tissue("Thyr", "Thyroids") and not same_tissue("Liv", "Liver")
     range_flags(dr, got, [["Thyroid", 0.5, 1.5, 0, 0]])
-    assert got.cell("1", "Thyroids").flags == ["out of range: 2 mg (0.5–1.5)"]
+    assert got.cell("1", "Thyroids").flags == ["out of the expected range: 2 mg (0.5–1.5)"]
 
     # a sheet of masses typed by hand: an animal's block of empty / full / difference
     art = d.parent / "data_artificial" / "art_weight-TheraSen_260903_biod_24E8.xlsx"
@@ -3028,8 +3145,19 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
                      ("r3", 0.570, 1.0, 115, None, "w", 115, True, 219, 0.03, 115)])
     assert not pairs_of(gb, Study(min_basis="cpm")), "r3 under 500 CPM: not valid"
     assert pairs_of(gb, Study(min_basis="cpm", valid_counts=100)), "valid, ±3 % each: differ"
-    assert not pairs_of(gb, Study(min_basis="cpm", valid_counts=100, valid_max=1000)), \
+    assert not pairs_of(gb, Study(min_basis="cpm", max_basis="cpm", valid_counts=100,
+                                  valid_max=1000, valid_dt=0)), \
         "r1 over the valid top: not valid either"
+    # one top per range since 2026.10.9: a CPM / Bq one (no dead time then), or the dead time
+    assert one_top({"max_basis": "cpm", "valid_dt": 1.5, "dt_max": 1.1})["max_basis"] == "dt"
+    assert one_top({"max_basis": "cpm", "valid_max": 9e4, "valid_dt": 1.5})["valid_dt"] == 0
+    assert one_top({"max_basis": "kbq", "valid_dt": 0, "dt_max": 0}) == {
+        "max_basis": "kbq", "valid_dt": 0, "dt_max": 0}, "no top: kept as it is"
+    assert is_valid(("x", 1.0, 9.0, 600), Study(max_basis="cpm", valid_dt=0)), "no dead time"
+    two = hidex.Slot(1, 1, dead_time=1.02, counts={"p": 900, "w": 4000}, cpm={"p": 1800, "w": 8000})
+    assert [size(two, "p", None, u, "w") for u in ("counts", "counts_all", "cpm_all", "dt")] \
+        == [900, 4000, 8000, 1.02], "whole spectrum: the file's widest window"
+    assert not is_valid(("x", 1.0, 1.6, 600), Study())
     tubes = [("w", 0.0105, 2), ("r2", 0.0084, 1), ("r3", 0.0082, 1)]     # … and agree: r2, r3
     same = lambda a, b: agree(a[1], b[1], Study())                     # noqa: E731
     assert [u[0] for u in agreeing(tubes, same)] == ["r2", "r3"]

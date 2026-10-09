@@ -56,7 +56,8 @@ picks the flags that tint a cell; **▤** sets which animals and tissues show, i
 Click a cell: the side panel (**sources**) shows its countings and weighings side by side,
 ticked where in use, ⚠ where something looks off (hover for why). Click a row to use it
 alone (Ctrl+click adds or removes one; a counting's energy window is picked in its row),
-then **Apply** to keep it for the selected cells.
+then **Apply** to keep it for the selected cells; **Back to the rules** drops it. **empty
+tube** marks a tube that held nothing: no value.
 
 **⧉** copies the table (Ctrl+C the selection); **Export…** writes `.xlsx` / `.csv`.
 
