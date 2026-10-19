@@ -54,7 +54,7 @@ from .study import (
     DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue,
     age_weeks, at_imaging, at_injection, life_dates, when_views, imaging_label, auto_assign, compute, decay, format_date, format_time,
     guess_role, half_life_s, kind_of, names_summary, next_id, parse_time, propose,
-    read_animals, read_column, read_weights, recovery_pct, set_half_lives, strip_summary, tail_pct,
+    put_weights, read_animals, read_column, read_weights, recovery_pct, set_half_lives, strip_summary, tail_pct,
     time_problems, unique_names, born, mid_date, colon_time, carry_fixes, unplaced, stamp,
     parse_age, parse_pi, FIELD_TYPES, fdef, clean_fdef, typed_procedures,
     default_procedures, ev_fields, SPECT_FIELDS, format_pi, time_views, event_time,
@@ -2787,12 +2787,12 @@ class AnimalWindow(QMainWindow):
          ["weight", "isotope", "molecule", "injection", "injection route", "injection volume",
           "syringe full", "syringe empty", "tail"]),
         ("ARRIVE 2.0 — reported with the study", "#d9b44a",
-         ["species", "strain", "genotype", "sex", "DOB", "supplier", "arrival",
+         ["species", "strain", "genotype", "sex", "DOB", "supplier", "batch", "arrival",
           "protocol", "housing", "health status", "euthanasia", "euthanasia time"]),
     ]
     SC = 1                                   # the table view: field, animals, copy, on card
     COL_W = 150                              # an animal's column in it
-    OPTIONAL = {"injection volume",          # in the first group, not needed for the values
+    OPTIONAL = {"injection volume", "batch",  # in the first group, not needed for the values
                 "arrival", "health status"}  # the other way to a date of birth; nice to have
     PAIRED = {"age", "age at arrival"}       # on the DOB's and the arrival's line
     LABEL = {"weight": "body weight (g)", "syringe full": "syringe full (MBq, at)",
@@ -5797,7 +5797,7 @@ class MainWindow(QMainWindow):
 
     def open_files(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Add files", _here(self),
-                                                "Data (*.xlsx *.csv *.json);;All files (*)")
+                                                "Data (*.xlsx *.ods *.csv *.wt *.json);;All files (*)")
         if paths:
             self.add_files([Path(p) for p in paths])
 
@@ -5870,27 +5870,22 @@ class MainWindow(QMainWindow):
         """A sheet of masses: each one a typed mass (it wins over the tubes); what could not
         be read, or barely anything, said in a message with the layout that always reads."""
         st = self.study
-        for aid, tname, g in rows:
-            m = next((x for x in st.manual if (x.animal, x.tissue) == (aid, tname)), None)
-            if m is None:
-                m = Manual(aid, tname)
-                st.manual.append(m)
-            m.mass_g, m.note = g, m.note or f"from {p.name}"
-            m.typed.pop("mass_g", None)
-            if (t := st.tissue(tname)) and "mass" not in t.hand:
-                t.hand.append("mass")
-                t.closed = [x for x in t.closed if x != "mass"]
-        n_an = len({a for a, _, _ in rows}) or 1
+        n = put_weights(st, rows, p.name)
+        n_an = len({r[0] for r in rows}) or 1
+        said = ", ".join(f"{k} {w}" for k, w in ((n["mass"], "masses"), (n["empty"], "tares"),
+                                                 (n["full"], "full tubes")) if k)
         thin = len(rows) < 0.5 * n_an * sum(1 for t in st.tissues if t.role == "tissue")
         if (unsure or thin) and self.isVisible():
             QMessageBox.information(self, APP_NAME, (
-                f"{p.name}: {len(rows)} mass(es) read, for {n_an} animal(s), as typed values."
+                f"{p.name}: {said or 'nothing'} read, for {n_an} animal(s), as typed values"
+                + (" — a tare waits for its full tube (the counter's run, another sheet)"
+                   if n["empty"] and not n["full"] else "") + "."
                 + ("\n\nNot understood:\n" + "\n".join(unsure[:12]) if unsure else "")
                 + ("\n\nNot in the tissue list: " + ", ".join(unknown[:12]) if unknown else "")
                 + "\n\nIf it was read wrong (Ctrl+Z undoes it), a sheet always reads like this: "
-                  "a .xlsx or .csv, the tissues down the first column (header: tissue), one "
-                  "column per animal headed by its ID, the masses in g."))
-        return f"{p.name}: {len(rows)} masses for {n_an} animal(s) (typed rows)"
+                  "a .xlsx, .ods or .csv, the tissues down the first column (header: tissue), "
+                  "one column per animal headed by its ID, the masses in g."))
+        return f"{p.name}: {said} for {n_an} animal(s) (typed)"
 
     def _offer_fixes(self, ask=None):
         """An animal's tubes put in order by hand in one file: its other files, same tubes,

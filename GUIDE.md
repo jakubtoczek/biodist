@@ -61,6 +61,18 @@ was made. Everything is kept in one study file.
   standard. Blanks check the balance and the background.
 - Masses or activities measured apart (paraffin, dose calibrator) typed on the tissue's own
   row; they replace the files' values for that cell.
+- Weighing sheets made by hand, dropped like the rest: `.xlsx`, `.ods` (LibreOffice), `.csv`,
+  and a balance's `.wt` (one weight a line, in the tissues' order; its name says the animal
+  and the pass: `S2 empty.wt`, `S2 full.wt`). Tissues down; an animal's block of columns
+  under its ID or alias (`MICID MI 37`, `SKG-75`, `S1` all name animal 37, SKG-75, 1),
+  blocks across and further down; or one animal a sheet, named in the file name; or one row
+  a tube with an animal column. Each column's header says what it holds — empty tube /
+  tare / vide / foil, full tube / plein / total mass, a mass (direct, difference, wt,
+  tissue); said once over several columns, it holds for them. A mass is used as typed; an
+  empty tube is a tare and a full tube is weighed against it, so a sheet of tares and the
+  full tubes (another sheet, a `.wt`, the counter's run) make the mass together. A full tube
+  far lighter than its tare is a tissue weighed on its own. What does not add up (465 typed
+  for 3.465) is listed, not used.
 - The table shows, for each animal, the mass and activity in use.
 
 **Results**
@@ -150,6 +162,7 @@ A card per animal. The fields:
 | ID, aliases | the ID columns are named by; **+ alias** for an ear tag, a cage code |
 | species, strain, genotype | strain lists per species; a listed strain fills its genotype |
 | sex, DOB, g | date of birth (or an age: 12 wk); ▾ in it: supplier, arrival date, age at arrival — the DOB follows, in grey |
+| batch | in the animal window, by the supplier: the batch it came in (delivery date, lot or order) |
 | tracer | isotope (its half-life is used) and molecule |
 | injection | the injection time |
 | syringe full / empty | MBq and the time each was read |

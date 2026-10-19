@@ -94,7 +94,7 @@ def unique_names(names, taken=()) -> list[str]:
 # schema, so an unlisted ARRIVE item is just typed in and goes after these.
 CARD_FIELDS = ["species", "strain", "sex", "DOB"]            # always on the card
 ARRIVE_FIELDS = [
-    "group", "supplier", "arrival", "age at arrival", "protocol", "housing",
+    "group", "supplier", "batch", "arrival", "age at arrival", "protocol", "housing",
     "health status", "injection route", "euthanasia", "euthanasia time",
     "exclusion reason", "comment",
 ]
@@ -106,6 +106,7 @@ FIELD_HINT = {"arrival": "the day the animals came in", "age at arrival": "6 wk,
               "protocol": "IACUC / ethics protocol #",
               "euthanasia time": "HH:MM, or 2 h p.i.",
               "injection route": "i.v. tail vein…", "supplier": "Janvier, in-house…",
+              "batch": "the delivery: its date, the supplier's lot or order",
               "housing": HOUSING,
               "health status": "conventional, SPF, SOPF…",
               "euthanasia": "method: CO2, cervical dislocation under anaesthesia…",
@@ -139,6 +140,8 @@ def typed_fields(lists: dict | None = None) -> dict:
 FIELD_TIP = {
     "group": "The experimental group the animal belongs to (treated, control…)",
     "supplier": "Where the animal came from (vendor, or bred in-house)",
+    "batch": "The batch the animal came in from the supplier: the delivery date, a lot "
+             "or order number (animals of one batch share their age and history)",
     "arrival": "The day the animal came into the facility",
     "age at arrival": "The supplier's age on the arrival day — with the arrival date it "
                       "gives the date of birth",
@@ -674,6 +677,7 @@ EMPTY_TUBE = "empty tube"               # a cell marked so (Study.empty): no val
 BLANK_COUNTS = 1000      # a blank vial counting this many is not empty (background: 100-600)
 RECOUNT_COUNTS = 1000    # vials compared to tell a recount (±3 %, under its 10 % test)
 TUBE_OUT_G = 0.5         # a filled weighing this much under its empty: a tube taken out
+TYPED = "typed"          # tubes weighed and typed (a sheet, a .wt): a weighing like a file's
 ROUND_GAP = _dt.timedelta(minutes=20)   # a pause this long between count files: a new round
 #                          (261007: files 1 min apart, 44 min between the two rounds)
 DRIFT_MODES = {"": "off — as weighed",
@@ -796,6 +800,8 @@ class Manual:
     animal: str = ""
     tissue: str = ""
     mass_g: float | None = None
+    empty_g: float | None = None   # the tube, typed: a tare
+    full_g: float | None = None    # the tube and its tissue, typed: minus a tare
     mbq: float | None = None
     time: str = ""
     note: str = ""
@@ -1190,7 +1196,7 @@ class Result:
     def weighing_label(self, name: str, kind: str) -> str:
         """'weight', 'count+weight r2', 'typed': a weighing named by the pass it came in."""
         i = self.round_of(name)
-        return ("typed" if name == "manual" else "weight" if kind == "filled" else
+        return ("typed" if name in ("manual", TYPED) else "weight" if kind == "filled" else
                 f"count+weight r{i + 1}" if i is not None else KIND_LABEL.get(
                     self.files.get(name, ("",))[0], "weighed"))
 
@@ -1342,6 +1348,11 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         t = study.tissue(m.tissue)
         if m.animal and m.tissue and m.mass_g is not None and not (t and "mass" in t.closed):
             cell((m.animal, m.tissue)).fulls.append(("manual", m.mass_g, "direct"))
+        if m.animal and m.tissue and not (t and "mass" in t.closed):
+            if m.empty_g is not None:
+                cell((m.animal, m.tissue)).empties.append((TYPED, m.empty_g))
+            if m.full_g is not None:
+                cell((m.animal, m.tissue)).fulls.append((TYPED, m.full_g, "filled"))
 
     # ---- the control tubes (blanks), weighed empty then filled, should not change: a
     # balance that reads them light reads every tube of that file light, in proportion
@@ -2468,15 +2479,49 @@ def carry_fixes(study: Study, runs: dict[str, hidex.Run]) -> list[tuple[str, str
 
 
 # ---------------------------------------------------------------- import helpers
+_NUM = re.compile(r"-?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?")
+
+
+def _ods(path) -> list[list[list]]:
+    """Every sheet of a LibreOffice .ods as rows of cell values (numbers as floats), read from
+    its XML: no extra library."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    t, o = ("{urn:oasis:names:tc:opendocument:xmlns:table:1.0}",
+            "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}")
+    x = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+    out = []
+    for tab in ET.fromstring(zipfile.ZipFile(path).read("content.xml")).iter(t + "table"):
+        rows = []
+        for r in tab.iter(t + "table-row"):
+            row = []
+            for c in r:
+                if c.tag not in (t + "table-cell", t + "covered-table-cell"):
+                    continue
+                v = c.get(o + "value")
+                v = float(v) if v is not None and c.get(o + "value-type") in ("float", "percentage") \
+                    else "\n".join("".join(p.itertext()) for p in c.iter(x + "p")) or None
+                # ponytail: repeats capped — a sheet's blank tail repeats a cell 16k times
+                row += [v] * min(int(c.get(t + "number-columns-repeated", "1")), 64)
+            while row and row[-1] is None:
+                row.pop()
+            rows += [row] * min(int(r.get(t + "number-rows-repeated", "1")), 64 if row else 2)
+        while rows and not rows[-1]:
+            rows.pop()
+        out.append(rows)
+    return out
+
+
 def _grids(path) -> list[list[list]]:
-    """Every sheet of a .xlsx (or the one of a .csv) as rows of cell values."""
+    """Every sheet of a .xlsx or .ods (or the one of a .csv) as rows of cell values."""
     p = Path(path)
     if p.suffix.lower() in (".csv", ".txt"):
         text = p.read_text(encoding="utf-8-sig", errors="replace")
         rows = list(csv.reader(text.splitlines(), csv.Sniffer().sniff(text[:2000], ";,\t")))
-        num = re.compile(r"-?\d+(?:[.,]\d+)?")
-        return [[[float(v.replace(",", ".")) if num.fullmatch(v.strip()) else v.strip() or None
+        return [[[float(v.replace(",", ".")) if _NUM.fullmatch(v.strip()) else v.strip() or None
                   for v in r] for r in rows]]
+    if p.suffix.lower() == ".ods":
+        return _ods(p)
     import openpyxl
     wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
     return [[list(r) for r in ws.iter_rows(values_only=True)] for ws in wb.worksheets]
@@ -2484,12 +2529,12 @@ def _grids(path) -> list[list[list]]:
 
 def _mass(nums: list[float]) -> float | None:
     """A tissue's mass from the numbers of one animal's block on its row: the difference a
-    sheet works out (empty, full, full − empty), a mass weighed as it is, or full − empty."""
-    for i, a in enumerate(nums):
-        for j in range(i + 1, len(nums)):
-            for k in range(j + 1, len(nums)):
-                if abs(nums[j] - a - nums[k]) < 1e-6:
-                    return nums[k]
+    sheet works out (full − empty, in any column order: the smallest that fits), a mass
+    weighed as it is, or full − empty."""
+    fits = [d for k, d in enumerate(nums) for i, a in enumerate(nums) for j, b in enumerate(nums)
+            if len({i, j, k}) == 3 and abs(b - a - d) < 1e-6 and d > -0.005]
+    if fits:
+        return min(fits, key=abs)
     if len(nums) == 1 or nums and max(nums) - min(nums) < 1e-9:
         return nums[0]
     if len(nums) == 2 and min(nums) > 1:                    # two tube weighings
@@ -2497,55 +2542,237 @@ def _mass(nums: list[float]) -> float | None:
     return None
 
 
+_ROLE_WORDS = (("full", ("foil+tissue", "full", "filled", "plein", "total mass", "gross")),
+               ("empty", ("empty", "tare", "vide", "foil")),
+               ("mass", ("direct", "difference", "diff", "net", "tissu", "wt", "weight", "poids",
+                         "mass")))
+
+
+def _role(text: str) -> str:
+    """What a column of a weighing sheet holds, from its header: "empty" tubes, "full"
+    tubes, a "mass" (weighed on its own, or the sheet's difference); "" when it does not
+    say — an organ's whole mass or an activity is not this tube's."""
+    t = text.lower()
+    if any(w in t for w in ("organ", "act.", "mbq", "count")):
+        return ""
+    return next((role for role, words in _ROLE_WORDS if any(w in t for w in words)), "")
+
+
+def _weigh(vals: list[tuple[str, float]]) -> tuple[str, float] | None:
+    """One tube's numbers on a row, each with its column's role -> ("mass" | "empty" |
+    "full", g); None when they do not agree (465 typed for 3.465). A header that says
+    something the numbers do not (a "direct" mass as heavy as the tubes beside it) is
+    left out: the numbers alone decide."""
+    e = [v for r, v in vals if r == "empty"]
+    f = [v for r, v in vals if r == "full"]
+    d = [v for r, v in vals if r == "mass" and v > 0]     # ≤ 0: the sheet's formula on a blank
+    if e and f and d and abs(f[0] - e[0] - d[0]) < 1e-6:     # the headers and the numbers agree
+        return "mass", d[0]
+    if e and f and f[0] < 1 and f[0] < e[0] - TUBE_OUT_G:   # far under its tube: weighed on
+        d, f = [f[0]] + d, []                               # its own (on a boat, on paper)
+    if not (e or f or d) or d and min(e + f, default=1e9) - d[0] < TUBE_OUT_G:
+        m = _mass([v for _, v in vals])
+        return None if m is None or m < -0.005 else ("mass", m)
+    if len(e + f + d) >= 3 and (m := _mass(e + f + d)) is not None:
+        return "mass", m
+    if d and not (e and f and f[0] - e[0] > 0.0005):
+        return "mass", d[0]
+    if e and f:
+        return ("mass", f[0] - e[0]) if f[0] - e[0] > -0.005 else None
+    return ("empty", e[0]) if e else ("full", f[0]) if f else None
+
+
+def _key(s: str) -> str:
+    return re.sub(r"[\s_\-#+]+", " ", s.strip().lower()).strip()
+
+
+_KIND_WORDS = {"empty": "empty", "tare": "empty", "vide": "empty", "full": "full",
+               "filled": "full", "plein": "full", "complete": ""}
+
+
+def _namer(animals: list["Animal"]):
+    """who(text) -> the animal a heading or a file name says: its ID or alias, alone, at the
+    end ("MICID MI 37", "SKG-75") or after letters ("S19" for 19)."""
+    names = {_key(str(n)): a.id for a in animals for n in [a.id, *a.aliases] if n}
+
+    def who(s: str) -> str | None:
+        parts = _key(s).split(" ")
+        tries = [" ".join(parts[i:]) for i in range(len(parts))] + [parts[-1].lstrip(
+            "abcdefghijklmnopqrstuvwxyz")]
+        return next((names[t] for t in tries if t in names), None)
+    return who
+
+
+def _file_animal(stem: str, animals) -> str | None:
+    """The one animal a file's name names (its words but the pass: "S2 full" -> S2)."""
+    who = _namer(animals)
+    got = {a for w in re.split(r"[\s_]+", stem) if w and w.lower() not in _KIND_WORDS
+           for a in [who(w)] if a}
+    return got.pop() if len(got) == 1 else None
+
+
+def read_wt(path, animals: list["Animal"], tissues: list[str]):
+    """A balance's .wt file: one weight per line in the tubes' order — the study's tissues, in
+    order — for the animal and the pass its name says ("S2 full.wt", "S2 empty.wt"). As
+    read_weights; None when the name says no animal or no pass."""
+    p = Path(path)
+    vals = [float(v.replace(",", ".")) for v in p.read_text(errors="replace").split()
+            if _NUM.fullmatch(v)]
+    kind = next((_KIND_WORDS[w] for w in re.split(r"[\s_\-]+", p.stem.lower())
+                 if _KIND_WORDS.get(w)), "")
+    aid = _file_animal(p.stem, animals)
+    if not vals or not kind or aid is None:
+        return None
+    # ponytail: the study's tissues in their order, batches included; a .wt with fewer lines
+    # (one batch's tubes) is placed from the first tissue — said in the message
+    rows = [(aid, t, g, kind) for t, g in zip(tissues, vals)]
+    return rows, ([] if len(vals) == len(tissues) else
+                  [f"{len(vals)} weights for {len(tissues)} tissues: placed in the tissues' "
+                   "order from the first"]), []
+
+
 def read_weights(path, animals: list["Animal"], tissues: list[str]):
-    """A sheet of masses made by hand: animals across (a row holding their IDs or aliases),
-    tissues down (the study's names, left of each animal's block), in g. Returns
-    ([(animal id, tissue, g)], rows not understood, labels not in the tissue list) — or
-    None when it does not look like one (no animal and no tissue of the study on it)."""
-    names = {}
-    for a in animals:
-        for n in [a.id, *a.aliases]:
-            if n:
-                names[str(n).strip().lower()] = a.id
+    """A sheet of weighings made by hand (.xlsx, .ods, .csv; a balance's .wt): tissues down,
+    one block of columns per animal (a row of their IDs or aliases above, again further down
+    for the next animals), or one animal a sheet (its name in the file name), or one row a
+    tube (an animal column, the tissue beside it). Each column's header says what it holds —
+    empty tubes, full tubes, masses (Tare / Total mass / wt, vide / plein, foil / foil+tissue,
+    Direct weight…); a sheet that says it once ("Empty tube") says it for every column.
+    Returns ([(animal id, tissue, g, "mass" | "empty" | "full")], rows not understood, labels
+    not in the tissue list) — or None when it does not look like one."""
+    if Path(path).suffix.lower() == ".wt":
+        return read_wt(path, animals, tissues)
+    who = _namer(animals)
     tis = {t.lower(): t for t in tissues}
 
     def text(v):
         return (f"{v:g}" if isinstance(v, float) else str(v)).strip() if v is not None else ""
+
+    def num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    def label_of(row):
+        return next((text(v) for v in row if isinstance(v, str) and text(v).lower() in tis), "")
+
+    def roles_of(g):
+        """Each numeric column's role, from the text above the first tissue row; a column
+        with none there takes the one on its left ("Empty tube" over a merged span)."""
+        first = next((r for r, row in enumerate(g) if label_of(row)), len(g))
+        cols = {c for row in g[first:] for c, v in enumerate(row) if num(v)}
+        said = {}
+        for c in range(max(cols, default=-1) + 1):
+            heads = [text(row[c]) for row in g[:first] if c < len(row) and isinstance(row[c], str)
+                     and text(row[c])]
+            if heads:
+                said[c] = _role(heads[-1])
+        out, last = {}, ""
+        for c in range(max(cols, default=-1) + 1):
+            last = said.get(c, last) if c in cols or c in said else ""   # a label column stops it
+            if c in cols and last:
+                out[c] = last
+        return out
+
     got, unsure, unknown = {}, [], []
+
+    def take(aid, label, vals):
+        if label.lower() not in tis:
+            unknown.append(label)
+            return
+        if not vals:
+            return
+        w = _weigh(vals)
+        k = (aid, tis[label.lower()], w[0] if w else "")
+        if w is None:
+            unsure.append(f"{aid} {label}: {', '.join(f'{v:g}' for _, v in vals)}")
+        elif k in got and abs(got[k] - w[1]) > 1e-9:           # another sheet says otherwise:
+            unsure.append(f"{aid} {label}: {got[k]:g}, then {w[1]:g} further on (the first kept)")
+        else:
+            got.setdefault(k, round(w[1], 6))
+
     for g in _grids(path):
-        heads = []
-        for r, row in enumerate(g[:8]):
-            hit = [(c, names[text(v).lower()]) for c, v in enumerate(row)
-                   if text(v).lower() in names]
-            if len(hit) > len(heads[1]) if heads else hit:
-                heads = (r, hit)
-        if not heads:
-            continue
-        hr, cols = heads
-        marks = [c for c, v in enumerate(g[hr]) if text(v)] + [max(len(x) for x in g)]
-        for row in g[hr + 1:]:
-            for c0, aid in cols:                 # a block ends where the next heading is
-                c1 = next(c for c in marks if c > c0)
+        roles = roles_of(g)
+        before = len(got) + len(unsure)
+        heads, width = [], max((len(x) for x in g), default=0)
+        for row in g:                     # a row of animals (no tissue on it) heads what follows
+            hit = [(c, a) for c, v in enumerate(row) if text(v) for a in [who(text(v))] if a]
+            if hit and not label_of(row) and all(v == int(v) for v in row if num(v)):  # no mass on it
+                marks = [c for c, v in enumerate(row) if text(v)] + [width]
+                heads = [(c0, next(c for c in marks if c > c0), a) for c0, a in hit]
+                continue
+            if heads and not any(num(v) for v in row) and all(
+                    c0 < len(row) and isinstance(row[c0], str) and text(row[c0]) and
+                             text(row[c0]).lower() not in tis and not _role(text(row[c0]))
+                             for c0, _, _ in heads):
+                heads = []                    # names where the animals were: others, not ours
+                continue
+            for c0, c1, aid in heads:     # a block ends where the next heading is
                 label = next((text(row[c]) for c in range(min(c0, len(row) - 1), -1, -1)
                               if isinstance(row[c], str) and text(row[c])), "")
-                if not label:
+                if label:
+                    take(aid, label, [(roles.get(c, ""), row[c]) for c in range(c0, min(c1, len(row)))
+                                      if num(row[c])])
+        if len(got) + len(unsure) > before:
+            continue
+        # one row a tube: an animal column ("animal ID", fill-down), the tissue beside it
+        hr = next(((r, c) for r, row in enumerate(g[:12]) for c, v in enumerate(row)
+                   if isinstance(v, str) and re.search(r"animal|mouse|souris|\brat\b", v, re.I)),
+                  None)
+        if hr:
+            r0, ac = hr
+            aid, blank = None, 0
+            for row in g[r0 + 1:]:
+                if not any(text(v) for v in row):
+                    blank += 1
+                    if aid and blank > 1:
+                        break                     # two blank lines end the table
                     continue
-                if label.lower() not in tis:
-                    unknown.append(label)
-                    continue
-                nums = [v for v in row[c0:c1] if isinstance(v, (int, float))
-                        and not isinstance(v, bool)]
-                if not nums:
-                    continue
-                m = _mass(nums)
-                if m is None:
-                    unsure.append(f"{aid} {label}: {', '.join(f'{v:g}' for v in nums)}")
-                else:
-                    got[(aid, tis[label.lower()])] = round(m, 6)
+                blank = 0
+                if ac < len(row) and text(row[ac]):
+                    aid = who(text(row[ac]))
+                said = [text(v) for c, v in enumerate(row) if c != ac and isinstance(v, str)
+                        and text(v)]             # the tissue, else the first word (a rack…)
+                if aid and (label := next((x for x in said if x.lower() in tis), said[0] if said
+                                           else "")):
+                    take(aid, label, [(roles.get(c, ""), v) for c, v in enumerate(row)
+                                      if c != ac and num(v)])
+            if len(got) + len(unsure) > before:
+                continue
+        # one animal, named by the file ("…_S19.ods", "S2 complete.csv")
+        aid = _file_animal(Path(path).stem, animals)
+        if aid:
+            for row in g:
+                if label := next((text(v) for v in row if isinstance(v, str) and text(v)), ""):
+                    take(aid, label, [(roles.get(c, ""), v) for c, v in enumerate(row) if num(v)])
     if not got and not unsure:
         return None
-    return ([(a, t, m) for (a, t), m in got.items()], unsure,
+    return ([(a, t, g, k) for (a, t, k), g in got.items()], unsure,
             list(dict.fromkeys(unknown)))
+
+
+def put_weights(study: "Study", rows, note: str = "") -> dict[str, int]:
+    """Weighings read from a sheet into the study, as typed values: a mass wins over the
+    tubes; a tare or a filled tube is weighed like a file's ("typed"), so the other half can
+    come later (the counter's run, another sheet). A filled tube far under the tare typed for
+    it is a mass weighed on its own. Returns how many of each."""
+    n = {"mass": 0, "empty": 0, "full": 0}
+    for aid, tname, g, kind in rows:
+        m = next((x for x in study.manual if (x.animal, x.tissue) == (aid, tname)), None)
+        if m is None:
+            m = Manual(aid, tname)
+            study.manual.append(m)
+        if kind == "full" and m.empty_g is not None and g < 1 and g < m.empty_g - TUBE_OUT_G:
+            kind = "mass"
+        if kind == "mass":
+            m.mass_g = g
+            m.typed.pop("mass_g", None)
+            if (t := study.tissue(tname)) and "mass" not in t.hand:
+                t.hand.append("mass")
+                t.closed = [x for x in t.closed if x != "mass"]
+        else:
+            setattr(m, "empty_g" if kind == "empty" else "full_g", g)
+        m.note = m.note or f"from {note}"
+        n[kind] += 1
+    return n
 
 
 def read_column(path) -> list[str]:
@@ -2961,9 +3188,45 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     art = d.parent / "data_artificial" / "art_weight-TheraSen_260903_biod_24E8.xlsx"
     if art.exists():
         rows, unsure, _ = read_weights(art, [Animal("107", aliases=["C1"])], tissues)
-        m = {t: g for a, t, g in rows if a == "107"}
+        m = {t: g for a, t, g, k in rows if a == "107" and k == "mass"}
         assert len(m) == 25 and m["Liver"] == 0.9223 and m["Thyr"] == 0.00261 and not unsure, m
     assert read_weights(d / "260903_tissue_list_indiv.xlsx", [Animal("107")], tissues) is None
+
+    # the lab's own weighing sheets (data_weight), every layout, when they are there
+    w = d.parent / "data_weight"
+    if w.exists():
+        def got(name, ids, tis):
+            r = read_weights(w / name, [Animal(i) for i in ids], tis)
+            return {(a, t, k): g for a, t, g, k in r[0]}, r[1]
+        s2 = [x.split(",")[0] for x in (w / "S2 complete.csv").read_text().splitlines()[1:]]
+        st2 = Study(animals=[Animal("S2")], tissues=[Tissue(t) for t in s2])
+        assert put_weights(st2, read_weights(w / "S2  empty.wt", st2.animals, s2)[0])["empty"] == 30
+        assert put_weights(st2, read_weights(w / "S2 full.wt", st2.animals, s2)[0]) == \
+            {"mass": 4, "empty": 0, "full": 26}, "a full tube under 1 g, far under its tare: a mass"
+        r2 = compute(st2, {})
+        csv_ = got("S2 complete.csv", ["S2"], s2)[0]
+        assert all(abs(r2.cell("S2", t).mass_g - csv_[("S2", t, "mass")]) < 1e-9 for t in s2), \
+            "the two .wt (tares, then full tubes) give the sheet's own masses"
+        assert r2.source_label("S2", "Kidney", "mass") == "typed − tare"
+        mi, unsure = got("weighing_tubes_MICID-MI-37-38-39-40-41-42-43.xlsx", ["37", "39", "40"],
+                         ["Blood", "Bone marrow", "Large Bowel", "Tail"])
+        assert mi[("37", "Bone marrow", "mass")] == 0.00114 and mi[("40", "Bone marrow", "mass")] \
+            == 0.00185 and mi[("37", "Tail", "empty")] == 3.2521, "direct weights, a tail's tare"
+        assert abs(mi[("37", "Blood", "mass")] - 0.01134) < 1e-9 and ("39", "Blood", "mass") in mi
+        assert unsure == ["39 Large Bowel: 465, 4.08681"], unsure
+        he = got("Healtrig_14102026_u87_177-DOTA-mal.ods", ["1", "15"], ["Cerveau", "Reins"])[0]
+        assert he[("1", "Cerveau", "empty")] == 3.25826 and he[("1", "Cerveau", "full")] == 3.50254
+        assert he[("15", "Reins", "empty")] == 3.27041, "one 'Empty tube' over 20 columns"
+        sk = got("MICID-SKG-75-77-76-80-83-84-91-92-88.xlsx", ["SKG-75", "77"], ["blood", "bm"])[0]
+        assert abs(sk[("SKG-75", "blood", "mass")] - 0.34879) < 1e-9 and sk[("SKG-75", "bm", "mass")] \
+            == 0.00076 and ("77", "blood", "mass") in sk, "headings far down, ids at the end"
+        li = got("Linotte_250514_Tc99m-2C5-M1_Ctl mice_incomplete.ods", ["S1", "S8"], ["Blood"])[0]
+        assert li == {("S1", "Blood", "empty"): 3.24915, ("S8", "Blood", "empty"): 3.16317}
+        assert got("Imathera2_240327_68Ga-RAFT-RGD_HDMB+LacZ_S19.ods", ["S19"], ["Bone marrow", "Blood"]
+                   )[0] == {("S19", "Bone marrow", "empty"): 3.22032, ("S19", "Blood", "mass"): 0.16037}
+        ga = got("250703_Garym.ods", ["40", "47"], ["TS/A-pc", "muscle"])[0]
+        assert ga[("40", "TS/A-pc", "mass")] == 0.35585 and ("47", "muscle", "mass") in ga, \
+            "one row a tube, an animal column filled down"
 
     # a study keeps its files' data: it computes the same from them alone; its json has a
     # fingerprint that tells an edit made outside

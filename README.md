@@ -37,7 +37,9 @@ study step by step and how the numbers are made: **[the user guide](GUIDE.md)**.
 - **Tissues** — the vials in counting order. **+** loads a list (a recorded one, a file or
   the clipboard). Each tissue has a **role**: `tissue`, `tail`, `blank` (an empty control
   tube) or `standard`. **+** on a tissue adds a row to type a mass or an activity measured
-  apart (paraffin, dose calibrator).
+  apart (paraffin, dose calibrator). A **weighing sheet** dropped in (`.xlsx`, `.ods`,
+  `.csv`, a balance's `.wt`) fills those rows: masses, or tube weights — an empty-tube sheet
+  is the tares, its full tubes can come later (another sheet, the counter's run).
 - **Data sources** — the counter's files, a row each. BioDist works out what each one is
   (tare, weight, count, count + weight), matches the racks, spots recounts and places the
   vials on animals and tissues; the log says why, file by file — just check it. Click a file
