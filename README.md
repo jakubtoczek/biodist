@@ -70,7 +70,9 @@ section), `.odt` (Word), `.pdf`, `.md` or `.html`.
 
 ### Options
 
-To choose various options.
+To choose various options. **Export…** writes them all to a `.json`, **Import…** reads one
+back. A settings file from the bench app at the injection (its isotopes and half-lives,
+strains, procedures, whether the tail is subtracted) changes only those; the rest stays.
 
 The version is in the window title and on every report.
 

@@ -545,6 +545,17 @@ assert _save_prefs(tmp)
 PREFS["card_rows"], PREFS["strains"] = 99, "junk"
 _load_prefs(tmp)
 assert PREFS == keep, "options round trip"
+# the bench app's settings hold only some options: those change, the rest stays
+tmp.write_text(json.dumps({"isotopes": [["99mTc", 6.00718], ["47Sc", 80.4]], "strains": [["mouse", "BALB/c", ""]],
+                           "procedures": {"imaging": [{"name": "modality", "type": "list", "items": ["SPECT"]}]},
+                           "subtract_tail": False, "injact": {"units": ["MBq"]}}), encoding="utf-8")
+PREFS["card_rows"] = 7
+_app._read_prefs(tmp)
+assert PREFS["card_rows"] == 7 and PREFS["isotopes"] == [["99mTc", 6.00718], ["47Sc", 80.4]], PREFS["isotopes"]
+assert list(PREFS["procedures"]) == ["imaging"] and PREFS["subtract_tail"] is False and "injact" not in PREFS
+assert ["mouse", "BALB/c", "wild type (inbred)"] in PREFS["strains"]       # its genotype, as shipped
+_load_prefs(got=json.loads(json.dumps(keep)))
+assert PREFS == keep
 tmp.unlink()
 # Ctrl+Z in the Options: the options as they were (written to a scratch file here)
 real_file = _app.OPTIONS_FILE

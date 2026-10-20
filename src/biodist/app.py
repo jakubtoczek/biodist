@@ -358,6 +358,19 @@ def _load_prefs(path: Path | None = None, got=None):
             PREFS[new] = got[old]
 
 
+def _read_prefs(path: Path):
+    """Options from a file: BioDist's own (every option), or the bench app's settings (an
+    "injact" key) — its isotopes, strains, procedures and subtract_tail change, the rest stays."""
+    try:
+        got = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        got = None
+    if isinstance(got, dict) and "injact" in got:
+        _load_prefs(got={**json.loads(json.dumps(PREFS)), **{k: v for k, v in got.items() if k != "injact"}})
+    else:
+        _load_prefs(path)
+
+
 _PREFS_UNDO: dict[str, list] = {"back": [], "fwd": [], "now": []}
 
 
@@ -4598,7 +4611,7 @@ class OptionsWindow(QMainWindow):
             self._apply(None)
 
     def _apply(self, path):
-        _load_prefs(path, None if path else {})
+        _read_prefs(path) if path else _load_prefs(None, {})
         _save_prefs()
         self._build()
         self.main._later(self.main._sync)()
