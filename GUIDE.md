@@ -48,9 +48,12 @@ was made. Everything is kept in one study file.
 - A card per animal: ID and aliases, species, strain, genotype, sex, date of birth (or age),
   body weight, isotope and molecule, injection time, syringe full and empty, tail.
 - The animal window: every field, grouped as the values need them (red), as ARRIVE 2.0 asks
-  (amber), and the rest; copy a field to the other animals; other losses of the dose; notes.
-- Procedures (ARRIVE item 9): pre-/co-injection, imaging (SPECT, PET, CT…), anaesthesia,
-  tumour, surgery, treatment, diet, or any other — each kind with its own fields.
+  (amber), and the rest; copy a field to the other animals; corrections to the injected
+  activity; notes.
+- ARRIVE item 9 in two parts: the **model**, days or weeks before (diet, treatment, tumour,
+  surgery) and the study day's **procedures** (pre-, co- or post-injection, imaging — SPECT,
+  PET, CT… —, anaesthesia), or any other — each kind with its own fields, pre-filled as
+  Options says (by case: `4-5 % if agent = isoflurane`).
 - Times typed as a clock time (13:10, 13:10 d+1) or after the injection (2 h p.i.); days as a
   date, an age (8 wk) or from the study day (D-14) — the other forms are worked out.
 - Every animal side by side in one table: type into several cells at once, paste from Excel.
@@ -119,7 +122,7 @@ was made. Everything is kept in one study file.
 2. **Animals.** Fill the first card; **+** after the last card adds the next one, with the
    same isotope and molecule. ⤢ on a card opens the animal window for the ARRIVE items and
    the procedures; *▦ every animal* there fills a field for all of them at once.
-3. **Tissues.** **+** in the Tissues section ▸ a recorded list (or a file, or paste). Check
+3. **Tissues.** **+** in the empty Tissues section ▸ a recorded list (or a file, or paste). Check
    the roles: the control tube and empty vials should be `blank`, the tail vial `tail`.
 4. **Empty tubes.** Drop the tare files as they come off the counter. They are dealt to the
    animals in time order (the first file to animal 1…).
@@ -180,11 +183,16 @@ A card per animal. The fields:
   for it), *Other*. **copy ▾** copies a field to the other animals (every animal listed, the one copied
   from greyed); **on card** shows it on
   the card.
-- **+ loss / note**: activity that did not go in (a cotton on the tail…), taken off the
-  injected activity; notes on the biodistribution.
-- **Procedures** — **+ procedure** and a kind. The first imaging (and a surgery) adds its
-  anaesthesia as a procedure of its own — a CT added to a SPECT shares it; SPECT/CT typed as
-  one modality becomes two sessions. Each kind opens with its fields (Options › Procedures);
+- **+ correction / note**: a correction to the injected activity — activity that did not go
+  in (a cotton on the tail…), taken off it; notes on the biodistribution.
+- **Model** — **+ model** and a kind: what was done days or weeks before (diet, treatment
+  with its start and end, tumour, surgery with its own anaesthesia and analgesia). A kind with
+  a date among its fields is the model's.
+- **Procedures** — **+ procedure** and a kind. The first imaging adds its anaesthesia as a
+  procedure of its own — a CT added to a SPECT shares it; SPECT/CT typed as one modality
+  becomes two sessions. Each kind opens with its fields (Options › Procedures), pre-filled
+  (isoflurane, then 4-5 % and 1.5-2 %; SPECT's system, and its isotope / EW by the animal's
+  isotope); a change carries what depended on it, a field emptied by hand stays empty;
   **+ field** adds one to that procedure only. A procedure's field has its **copy ▾** and
   **on card** too (the card shows it as *imaging · start*). Time fields take a clock time or
   a time after the injection; day fields a date, an age or D-14 — the others are worked out
@@ -198,8 +206,10 @@ A card per animal. The fields:
 
 The vials of one animal, in counting order.
 
-- **+** (section bar): a recorded list, open a file, paste, one tissue, record this list, edit
-  the recorded lists.
+- **+** while the table is empty: a recorded list, open a file, paste, one tissue, edit the
+  recorded lists. Once there is a list, none is loaded over it: the **+ under the table** adds
+  one tissue (its name ready to type), and **export** writes the list to a file (one tissue a
+  line) or records it among the lists the empty table offers.
 - Columns: **tissue** (renaming it follows everywhere), **role**, **batch**, **#** (its place;
   typing a number moves it), then one column per animal with the mass and activity in use.
 - **role**: `tissue` (in the results), `tail` (taken off the injected activity), `blank`
@@ -326,7 +336,7 @@ Export / Import / Reset to defaults.
 | Formats | how times and dates are shown; numbers as typed or tidied |
 | Isotopes | names and half-lives |
 | Species and strains | strains per species, their genotype |
-| Procedures | the kinds, and each kind's fields: type (text, list, time · p.i., date · age · D-n), list items, example, shared line, shown when (`modality = SPECT`) |
+| Procedures | the kinds, and each kind's fields: type (text, list, time · p.i., date · age · D-n), list items, example, shared line, shown when (`modality = SPECT`), pre-filled (`isoflurane`; by case: `4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if isotope = 99mTc`) |
 | Tissue table | what a cell shows, the units typed in, the line over the table, the recorded tissue lists |
 | Data sources | what shows under a file's vials, how they are laid out, how the guess works |
 | Rules | the rules of the study open (below), expected ranges per tissue |
@@ -378,7 +388,7 @@ decay-corrected the CPM, the time it corrected them to is worked out from the vi
 undone (the log says so). BioDist decay-corrects it with the half-life of the animal's isotope (the study's own) to each animal's injection time (or one
 time for all). **%IA/g does not depend on that time** — dose and tissue are decayed alike.
 
-**Injected activity** = syringe full − syringe empty − other losses − tail (the card's, else
+**Injected activity** = syringe full − syringe empty − corrections − tail (the card's, else
 the counted `tail` vial), each decayed from its own time.
 
 **Mass** = filled tube − empty tube, or the counter's own sample mass if it tared, or a mass

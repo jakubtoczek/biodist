@@ -466,7 +466,9 @@ kept0 = w.study.animals[0].events[:]
 w.study.animals[0].events.clear()
 al.events[0]["modality"] = "SPECT"
 aw._copy([("ev", "imaging", 0, "modality")], [w.study.animals[0]], al, "imaging modality")
-assert w.study.animals[0].events == [{"kind": "imaging", "modality": "SPECT"}], \
+assert w.study.animals[0].events == [{"kind": "imaging", "modality": "SPECT",   # its pre-filled
+                                      "system": "Mediso SPECT/CT",               # values too
+                                      "isotope / EW": "99mTc (140 keV ± 20 %)"}], \
     w.study.animals[0].events
 w.study.animals[0].events[:] = kept0
 al.events[0].pop("modality")
@@ -492,12 +494,12 @@ app.processEvents()
 w.animal_win._step(True)
 app.processEvents()
 assert len(w.study.animals[-1].events) == n, "undone in the animal window"
-# the every-animal table holds the procedures, and the other losses
+# the every-animal table holds the procedures, and the corrections
 w.study.animals[0].losses.append({"mbq": "0.3", "time": "12:30", "what": "cotton"})
 w.animal_win.show_all()
 app.processEvents()
 heads = [w.animal_win.sheet.item(r, 0).text() for r in range(w.animal_win.sheet.rowCount())]
-assert "imaging 1 · modality" in heads and "other loss 1 (MBq)" in heads, heads
+assert "imaging 1 · modality" in heads and "correction 1 (MBq)" in heads, heads
 r = heads.index("imaging 2 · start")
 w.animal_win.sheet.setCurrentCell(r, len(w.study.animals) + w.animal_win.SC - 1)
 w.animal_win.sheet.item(r, len(w.study.animals) + w.animal_win.SC - 1).setText("13:30")

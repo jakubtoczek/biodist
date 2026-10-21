@@ -286,8 +286,8 @@ def _choice(study: Study, res: Result, runs) -> list:
              else _hhmm(res.ref)]]
 
 
-DAY_KINDS = ("pre/co-injection", "pre-injection", "co-injection", "imaging",
-             "anaesthesia")                                          # on the study day
+DAY_KINDS = ("pre/co/post-injection", "pre/co-injection", "pre-injection", "co-injection",
+             "imaging", "anaesthesia")                               # on the study day
 _DAY_EXTRA = ("injection route", "euthanasia", "euthanasia time", "injection volume")
 
 
@@ -330,8 +330,8 @@ def _animals(study: Study, res: Result, parts) -> list:
                 for a in study.animals]
         b += [("h", "The study day: tracer, injection, procedures"),
               _table(["ID", "isotope", "molecule", "route", "volume (µL)", "syringe full (MBq)",
-                      "at", "syringe empty (MBq)", "at", "other losses (MBq)", "injection",
-                      "tail (MBq)", "at", "injected activity (MBq, at injection)",
+                      "at", "syringe empty (MBq)", "at", "corrections (MBq)", "injection",
+                      "tail, injection site (MBq)", "at", "injected activity (MBq, at injection)",
                       f"at {img} start (MBq)", "euthanasia", "euthanasia time", "notes"], rows)]
         ev = [[a.label, event_text(e)] for a in study.animals for e in a.events
               if e.get("kind") in DAY_KINDS]

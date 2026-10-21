@@ -32,10 +32,15 @@ BioDist puts each one where it belongs. Hover anything for what it does. Every f
 study step by step and how the numbers are made: **[the user guide](GUIDE.md)**.
 
 - **Animals** — a card per animal: ID, weight, isotope and tracer, syringe full and empty
-  with their times, injection time, tail (activity left at the injection site). **+** adds
-  an animal; **⤢** opens the animal window for everything else.
-- **Tissues** — the vials in counting order. **+** loads a list (a recorded one, a file or
-  the clipboard). Each tissue has a **role**: `tissue`, `tail`, `blank` (an empty control
+  with their times, injection time, tail (injection site: activity left there), the
+  corrections to the injected activity. **+** adds an animal; **⤢** opens the animal window
+  for everything else — there, **+ model** (what was done days before: diet, treatment,
+  tumour, surgery) and **+ procedure** (the study day's: injections before, with or after the
+  tracer, imaging, anaesthesia), each with its fields pre-filled (Options › Procedures).
+- **Tissues** — the vials in counting order. While the table is empty, its **+** loads a
+  list (a recorded one, a file or the clipboard); then the **+** under the table adds one
+  tissue, and **export** writes the list to a file or records it. Each tissue has a
+  **role**: `tissue`, `tail`, `blank` (an empty control
   tube) or `standard`. **+** on a tissue adds a row to type a mass or an activity measured
   apart (paraffin, dose calibrator). A **weighing sheet** dropped in (`.xlsx`, `.ods`,
   `.csv`, a balance's `.wt`) fills those rows: masses, or tube weights — an empty-tube sheet
@@ -73,6 +78,10 @@ section), `.odt` (Word), `.pdf`, `.md` or `.html`.
 To choose various options. **Export…** writes them all to a `.json`, **Import…** reads one
 back. A settings file from the bench app at the injection (its isotopes and half-lives,
 strains, procedures, whether the tail is subtracted) changes only those; the rest stays.
+**Procedures**: each kind's fields, and what each is **pre-filled** with when the procedure
+is added — a value, or one per case (`4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if
+isotope = 99mTc`: the procedure's fields, else the animal's); a change of what it depends
+on carries it along. A kind with a date among its fields is the animal's model.
 
 The version is in the window title and on every report.
 

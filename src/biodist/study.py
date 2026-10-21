@@ -105,7 +105,7 @@ HOUSING = HOUSINGS[0]
 FIELD_HINT = {"arrival": "the day the animals came in", "age at arrival": "6 wk, 42 d",
               "protocol": "IACUC / ethics protocol #",
               "euthanasia time": "HH:MM, or 2 h p.i.",
-              "injection route": "i.v. tail vein…", "supplier": "Janvier, in-house…",
+              "injection route": "i.v. tail vein…", "supplier": "Janvier, Envigo…",
               "batch": "the delivery: its date, the supplier's lot or order",
               "housing": HOUSING,
               "health status": "conventional, SPF, SOPF…",
@@ -118,7 +118,7 @@ ANIMAL_LISTS = {"euthanasia": ["CO2", "cervical dislocation under anaesthesia",
                                "decapitation under anaesthesia", "pentobarbital overdose"],
                 "injection route": ["i.v. tail vein", "i.v. retro-orbital", "i.p.", "s.c.",
                                     "intratumoural"],
-                "supplier": ["Janvier", "Charles River", "Envigo", "in-house"],
+                "supplier": ["Janvier", "Envigo"],
                 "health status": ["conventional", "SPF", "SOPF", "germ-free"],
                 "housing": HOUSINGS}
 SPECIAL = ("dob", "date of birth", "age", "arrival", "age at arrival")   # their own widgets
@@ -160,17 +160,22 @@ FIELD_TIP = {
 }
 
 # the other things done to an animal — ARRIVE item 9: one block each, a kind and the fields
-# that kind asks for (Options edits them; "+ field" adds one to a single procedure)
-EVENT_FIELDS = {"pre/co-injection": ["injection", "what", "when", "dose / amount", "volume",
-                                     "route"],
+# that kind asks for (Options edits them; "+ field" adds one to a single procedure). A kind
+# with a day among its fields (a date: diet, treatment, tumour, surgery) is the animal's
+# model, done days before; the others are the study day's procedures (`is_model`).
+INJECTIONS = "pre/co/post-injection"
+EVENT_FIELDS = {INJECTIONS: ["injection", "what", "when", "dose / amount", "volume", "route"],
                 "imaging": ["modality", "start", "duration"],
                 "anaesthesia": ["agent", "induction", "maintenance", "when"],
+                "diet": ["what", "start date"],
+                "treatment": ["what", "dose / amount", "route", "schedule", "start date",
+                              "end date"],
                 "tumour": ["cells", "cell number", "site", "Matrigel", "date"],
-                "surgery": ["what", "date", "analgesia"],
-                "treatment": ["what", "when", "dose / amount", "route"],
-                "diet": ["what", "start date"]}
-NEEDS_ANAESTHESIA = ("imaging", "surgery")   # adding one adds an anaesthesia procedure
-MODALITIES = ["SPECT", "PET", "CT", "MRI", "planar scintigraphy", "optical"]
+                "surgery": ["what", "date", "anaesthesia", "analgesia", "recovery"]}
+OLD_KINDS = {"pre/co-injection": INJECTIONS}      # the bench app's name until 2026.10.21
+NEEDS_ANAESTHESIA = ("imaging",)   # adding one adds an anaesthesia procedure; a surgery, days
+#                                    before, has its own anaesthesia field (since 2026.10.21)
+MODALITIES = ["SPECT", "PET", "CT", "MRI"]
 
 
 def split_modality(events: list[dict]) -> list[dict]:
@@ -209,9 +214,14 @@ def anaesthesia_apart(events: list[dict]) -> list[dict]:
 FIELD_TYPES = {"text": "text", "list": "list", "time": "time · p.i.", "date": "date · age · D-n"}
 
 
-def fdef(name, type="text", items=(), example="", line="", when="") -> dict:
+def fdef(name, type="text", items=(), example="", line="", when="", default="",
+         defaults=()) -> dict:
+    """`default`: pre-filled when the procedure is added; `defaults`: (when, value) pairs —
+    pre-filled when that holds ("agent = isoflurane", "isotope = 99mTc": the procedure's
+    fields, else the animal's), the first that does, before `default`."""
     return {"name": name, "type": type, "items": list(items), "example": example,
-            "line": line, "when": when}
+            "line": line, "when": when, "default": default,
+            "defaults": [{"when": w, "value": v} for w, v in defaults]}
 
 
 def clean_fdef(d) -> dict | None:
@@ -219,24 +229,94 @@ def clean_fdef(d) -> dict | None:
     if not isinstance(d, dict) or not str(d.get("name", "")).strip():
         return None
     out = fdef(str(d["name"]).strip())
-    out.update({k: str(d[k]) for k in ("example", "line", "when") if isinstance(d.get(k), str)})
+    out.update({k: str(d[k]) for k in ("example", "line", "when", "default")
+                if isinstance(d.get(k), str)})
     out["type"] = d.get("type") if d.get("type") in FIELD_TYPES else "text"
     out["items"] = [str(x) for x in d.get("items", []) if str(x).strip()] \
         if isinstance(d.get("items"), list) else []
+    out["defaults"] = [{"when": str(x.get("when", "")), "value": str(x["value"])}
+                       for x in d.get("defaults", []) if isinstance(x, dict)
+                       and str(x.get("value", "")).strip()] \
+        if isinstance(d.get("defaults"), list) else []
     return out
 
 
+def defaults_text(f: dict) -> str:
+    """A field's pre-filled values as Options shows them: '4-5 % if agent = isoflurane; 3 %'."""
+    return "; ".join([f"{d['value']} if {d['when']}" for d in f.get("defaults", [])]
+                     + ([f["default"]] if f.get("default") else []))
+
+
+def read_defaults(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """'4-5 % if agent = isoflurane; 3 %' -> ('3 %', [('agent = isoflurane', '4-5 %')])."""
+    plain, pairs = "", []
+    for part in re.split(r"[;\n]", text):
+        v, _, w = part.partition(" if ")
+        if v.strip() and w.strip():
+            pairs.append((w.strip(), v.strip()))
+        elif v.strip():
+            plain = v.strip()
+    return plain, pairs
+
+
+def default_of(f: dict, ev: dict, around: dict) -> str:
+    """What a field is pre-filled with in this procedure, the animal's fields `around` it."""
+    both = {**around, **{k: v for k, v in ev.items() if str(v).strip()}}
+    return next((d["value"] for d in f.get("defaults", []) if holds(d["when"], both)),
+                f.get("default", ""))
+
+
+def prefill(ev: dict, fields: list[dict], around: dict, old: dict | None = None) -> bool:
+    """A new procedure's empty fields that are there (`when`) take their pre-filled values —
+    again while one brings another (the agent its induction). `old`: the procedure before a
+    change — then only a field whose pre-filled value changed with it follows, when empty or
+    still as pre-filled (one emptied by hand stays empty). True if anything changed."""
+    changed = False
+    while True:
+        both = {**around, **ev}
+        new = {}
+        for f in fields:
+            if not holds(f["when"], both):
+                continue
+            now, cur = default_of(f, ev, around), str(ev.get(f["name"], "")).strip()
+            was = None if old is None else default_of(f, old, around) \
+                if holds(f["when"], {**around, **old}) else ""      # not there before: none
+            if now != cur and (not cur if was is None else now != was and cur in ("", was)):
+                new[f["name"]] = now
+        if not new:
+            return changed
+        ev.update(new)
+        for k in [k for k, v in new.items() if not v]:
+            ev.pop(k)                    # no longer applies: gone, as a field emptied by hand
+        changed = True
+
+
+def is_model(kind: str, procs: dict) -> bool:
+    """The animal's model (days before: a day among its fields), not the study day's."""
+    return any(f["type"] == "date" for f in procs.get(kind, []))
+
+
+_ROUTES = ["i.v. tail vein", "i.p.", "s.c.", "oral gavage"]
 _ITEMS = {("imaging", "modality"): MODALITIES,
-          ("anaesthesia", "agent"): ["isoflurane", "ketamine / xylazine", "none"],
-          ("pre/co-injection", "injection"): ["pre-injection", "co-injection"],
-          ("pre/co-injection", "route"): ["i.v. tail vein", "i.p.", "s.c.", "oral gavage"],
-          ("pre-injection", "route"): ["i.v. tail vein", "i.p.", "s.c.", "oral gavage"],
+          ("anaesthesia", "agent"): ["isoflurane"],
+          ("anaesthesia", "induction"): ["4-5 %"],
+          ("anaesthesia", "maintenance"): ["1.5-2 %"],
+          (INJECTIONS, "injection"): ["pre-injection", "co-injection", "post-injection"],
+          (INJECTIONS, "route"): _ROUTES, ("pre-injection", "route"): _ROUTES,
           ("diet", "what"): ["standard chow", "iodine-free"]}
 _EXAMPLES = {("imaging", "duration"): "30 min", ("anaesthesia", "induction"): "4 % in O2",
              ("anaesthesia", "maintenance"): "1.5-2 % in O2", ("tumour", "cells"): "4T1, TS/A-pc…",
              ("tumour", "cell number"): "1 × 10⁶", ("tumour", "site"): "right flank",
-             ("tumour", "Matrigel"): "50 %", ("co-injection", "what"): "blocking dose…",
-             ("surgery", "analgesia"): "buprenorphine 0.1 mg/kg"}
+             ("tumour", "Matrigel"): "50 %", (INJECTIONS, "what"): "blocking dose, displacement…",
+             ("surgery", "anaesthesia"): "isoflurane 4-5 %, then 1.5-2 %",
+             ("surgery", "analgesia"): "buprenorphine 0.1 mg/kg s.c. before, then every 12 h "
+                                       "for 48 h",
+             ("treatment", "schedule"): "daily, 3 × a week…",
+             ("treatment", "end date"): "empty: still going on"}
+# pre-filled when the procedure is added (Options › Procedures, "pre-filled")
+_DEFAULTS = {("anaesthesia", "agent"): ("isoflurane", ()),
+             ("anaesthesia", "induction"): ("", [("agent = isoflurane", "4-5 %")]),
+             ("anaesthesia", "maintenance"): ("", [("agent = isoflurane", "1.5-2 %")])}
 
 
 def typed_procedures(names: dict[str, list[str]], lists: dict | None = None) -> dict:
@@ -252,18 +332,26 @@ def typed_procedures(names: dict[str, list[str]], lists: dict | None = None) -> 
             items = _ITEMS.get((kind, f)) or [x for x in lists.get(f, []) if "/" not in x]
             out[kind].append(fdef(f, "date" if dated(kind, f) else "time" if timed(kind, f)
                                   else "list" if items else "text", items,
-                                  _EXAMPLES.get((kind, f), "")))
+                                  _EXAMPLES.get((kind, f), ""),
+                                  default=_DEFAULTS.get((kind, f), ("", ()))[0],
+                                  defaults=_DEFAULTS.get((kind, f), ("", ()))[1]))
     return out
 
 
-SPECT_FIELDS = [fdef("system", "list", ["Mediso SPECT/CT"], line="hardware",
-                     when="modality = SPECT"),
+# the scanners' fields: one system for both (pre-filled by the modality), then each one's own
+SPECT_FIELDS = [fdef("system", "list", ["Mediso SPECT/CT", "Mediso PET/MRI"], line="hardware",
+                     when="modality = SPECT, PET",
+                     defaults=[("modality = SPECT", "Mediso SPECT/CT"),
+                               ("modality = PET", "Mediso PET/MRI")]),
                 fdef("collimator", "list", ["APT62 (mouse, HS)", "APT63 (rat, HS)"],
                      line="hardware", when="modality = SPECT"),
                 fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)"], line="acquisition",
-                     when="modality = SPECT"),
+                     when="modality = SPECT",
+                     defaults=[("isotope = 99mTc", "99mTc (140 keV ± 20 %)")]),
                 fdef("time per frame", example="50 s/frame", line="acquisition",
-                     when="modality = SPECT")]
+                     when="modality = SPECT"),
+                fdef("ring difference", "list", ["1:5", "1:3"], line="acquisition",
+                     when="modality = PET")]
 
 
 def default_procedures() -> dict:
@@ -287,8 +375,8 @@ def ev_fields(ev: dict, procs: dict[str, list[dict]]) -> list[dict]:
     own = [f for f in procs.get(ev.get("kind", ""), [fdef(x) for x in OTHER_EVENT])
            if holds(f["when"], ev) or str(ev.get(f["name"], "")).strip()]
     names = {f["name"] for f in own}
-    return own + [fdef(k) for k in ev if k not in names and k not in ("kind", "note")] + [
-        fdef("note")]
+    return own + [fdef(k) for k in ev if k not in names and k not in ("kind", "note")] + (
+        [] if "note" in names else [fdef("note")])
 
 
 def event_text(ev: dict) -> str:
@@ -309,10 +397,10 @@ ARRIVE_NEEDED = [("species", ("species",)), ("strain", ("strain",)), ("sex", ("s
 # procedure that needed it (a biodistribution alone may have none)
 EVENT_NEEDED = {"imaging": ["modality", "start"],
                 "anaesthesia": ["agent"],
-                "surgery": ["what", "date", "analgesia"],
+                "surgery": ["what", "date", "anaesthesia", "analgesia"],
                 "tumour": ["cells", "cell number", "site", "date"],
                 "treatment": ["what", "dose / amount", "route"],
-                "pre/co-injection": ["what", "dose / amount", "route"],
+                INJECTIONS: ["what", "dose / amount", "route"],
                 "pre-injection": ["what", "dose / amount", "route"],     # studies before
                 "co-injection": ["what", "dose / amount"],               # 2026.10.6.2
                 "diet": ["what", "start date"]}
@@ -322,20 +410,11 @@ def dated(kind: str, f: str) -> bool:
     """A procedure field holding a day (not a time on the study day): date / age / D-n."""
     return "date" in f or f == "implanted on" or (
         f == "when" and kind in ("tumour", "surgery", "treatment", "diet"))
-# species, strain, genotype (filled in when the strain is picked). Options edits the list.
+# species, strain, genotype (filled in when the strain is picked). Options edits the list:
+# the lab's, four or five at most (user, 2026.10.21) — any other can be typed
 WT, OUT = "wild type (inbred)", "wild type (outbred)"
-STRAINS = [
-    ("mouse", "C57BL/6", WT), ("mouse", "C57BL/6J", WT), ("mouse", "C57BL/6N", WT),
-    ("mouse", "BALB/c", WT), ("mouse", "BALB/c nude", "Foxn1 nu/nu"),
-    ("mouse", "NMRI nude", "Foxn1 nu/nu"), ("mouse", "Athymic nude", "Foxn1 nu/nu"),
-    ("mouse", "SCID", "Prkdc scid"), ("mouse", "NSG", "Prkdc scid, Il2rg tm1Wjl"),
-    ("mouse", "NOD", WT), ("mouse", "NMRI", OUT), ("mouse", "CD-1", OUT),
-    ("mouse", "Swiss", OUT), ("mouse", "FVB", WT), ("mouse", "129", WT),
-    ("mouse", "C3H", WT), ("mouse", "DBA/2", WT),
-    ("mouse", "ApoE-/- (C57BL/6)", "Apoe tm1Unc"), ("mouse", "Ldlr-/- (C57BL/6)", "Ldlr tm1Her"),
-    ("rat", "Wistar", OUT), ("rat", "Sprague-Dawley", OUT), ("rat", "Lewis", WT),
-    ("rat", "Fischer 344", WT), ("rat", "RNU nude", "Foxn1 rnu/rnu"),
-]
+STRAINS = [("mouse", "Athymic nude", "Foxn1 nu/nu"), ("mouse", "C57BL/6J", WT),
+           ("mouse", "BALB/c", WT), ("rat", "Wistar", OUT)]
 
 
 def arrive_gaps(a: "Animal") -> list[str]:
@@ -347,7 +426,7 @@ def arrive_gaps(a: "Animal") -> list[str]:
         f"{ev.get('kind')}: {f}" for ev in a.events
         for f in EVENT_NEEDED.get(ev.get("kind", ""), [])
         if not str(ev.get(f, "") or (ev.get("when", "") if f == "start" else "")).strip()] + (
-        ["anaesthesia (a procedure, for the imaging or surgery)"]
+        ["anaesthesia (a procedure, for the imaging)"]
         if any(e.get("kind") in NEEDS_ANAESTHESIA for e in a.events)
         and not any(e.get("kind") == "anaesthesia" for e in a.events) else [])
 
@@ -726,6 +805,9 @@ class Animal:
                 {"mbq": d.get("typed", {}).pop("loss_mbq", "" if mbq is None else f"{mbq:g}"),
                  "time": t, "what": ""})
         d["events"] = split_modality(anaesthesia_apart(d.get("events", [])))
+        for e in d["events"]:
+            if e.get("kind") in OLD_KINDS:
+                e["kind"] = OLD_KINDS[e["kind"]]
         ex = d.get("extra", {})
         for f, kind, key in (("tumour", "tumour", "cells"),       # 2026.10.6: procedures
                              ("anaesthesia", "anaesthesia", "agent"), ("diet", "diet", "what")):
@@ -1712,7 +1794,7 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
             if mbq is None:
                 continue
             if tl is None:
-                notes.append(f"{a.id}: other loss time {lo.get('time')!r} not understood")
+                notes.append(f"{a.id}: correction time {lo.get('time')!r} not understood")
             else:
                 idb -= decay(mbq * 1e6, tl, ref, hl)
         tail = sum(cells[(a.id, n)].bq for n in tail_names
@@ -3148,6 +3230,29 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
         ("cells", "text"), ("date", "date"), ("modality", "list"), ("start", "time")], old
     assert event_text({"kind": "imaging", "modality": "SPECT", "start": ""}) \
         == "imaging: modality SPECT"
+    # pre-filled: the agent, then what it brings; a change carries what was still as filled
+    an = {"kind": "anaesthesia"}
+    prefill(an, procs["anaesthesia"], {})
+    assert (an["agent"], an["induction"], an["maintenance"]) == ("isoflurane", "4-5 %",
+                                                                "1.5-2 %"), an
+    old = dict(an)
+    an.pop("induction")                          # emptied by hand: stays empty
+    prefill(an, procs["anaesthesia"], {}, old)
+    assert "induction" not in an, an
+    old, an["agent"] = dict(an), "ketamine / xylazine"
+    prefill(an, procs["anaesthesia"], {}, old)
+    assert "maintenance" not in an and "induction" not in an, an
+    im = {"kind": "imaging", "modality": "SPECT"}
+    prefill(im, procs["imaging"], {"isotope": "99mTc"})
+    assert (im["system"], im["isotope / EW"]) == ("Mediso SPECT/CT", "99mTc (140 keV ± 20 %)")
+    old, im["modality"] = dict(im), "PET"
+    prefill(im, procs["imaging"], {"isotope": "99mTc"}, old)
+    assert im["system"] == "Mediso PET/MRI", im
+    assert read_defaults(defaults_text(procs["imaging"][3])) == (
+        "", [("modality = SPECT", "Mediso SPECT/CT"), ("modality = PET", "Mediso PET/MRI")])
+    assert [k for k in procs if is_model(k, procs)] == ["diet", "treatment", "tumour", "surgery"]
+    assert Animal.from_dict({"events": [{"kind": "pre/co-injection"}]}).events[0]["kind"] \
+        == INJECTIONS
     assert Source(slotmap={"1:1": ["107", ""]}).mapping(
         hidex.Run(Path(""), "", "", "count", None, None, [], {}, [hidex.Slot(1, 1)])) == {}, \
         "half-typed: no vial placed"
@@ -3276,7 +3381,7 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     # a dual-modality session is two procedures
     assert [e["modality"] for e in split_modality([{"kind": "imaging", "modality": "SPECT/CT",
                                                     "start": "13:10"}])] == ["SPECT", "CT"]
-    assert "anaesthesia (a procedure, for the imaging or surgery)" in arrive_gaps(
+    assert "anaesthesia (a procedure, for the imaging)" in arrive_gaps(
         Animal(events=[{"kind": "imaging"}]))
 
     # times: bare on the study day, or with a date in any usual order

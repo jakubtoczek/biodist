@@ -47,8 +47,8 @@ from shiboken6 import isValid
 from . import __version__, hidex, report
 from . import study as _study
 from .study import (
-    NEEDS_ANAESTHESIA, split_modality,
-    ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
+    NEEDS_ANAESTHESIA, split_modality, prefill, is_model, defaults_text, read_defaults,
+    OLD_KINDS, ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
     HALF_LIFE_S, ISOTOPES, KIND_LABEL, KINDS, PRESET_LABEL, ROLE_HELP, STRAINS, TIME_FORMATS,
     TISSUE_MAJOR, TISSUE_ROLES, UNITS, DIGITS, DRIFT_MODES, BASES, TOPS, EMPTY_TUBE, one_top,
     DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue,
@@ -286,13 +286,13 @@ def _load_prefs(path: Path | None = None, got=None):
         have = {f["name"] for f in PREFS["procedures"].get("imaging", [])}
         PREFS["procedures"].get("imaging", []).extend(
             dict(f) for f in SPECT_FIELDS if f["name"] not in have)
-    PREFS["procedures"] = {str(k): [f for x in v if (f := clean_fdef(x))]
+    PREFS["procedures"] = {OLD_KINDS.get(str(k), str(k)): [f for x in v if (f := clean_fdef(x))]
                            for k, v in PREFS["procedures"].items() if isinstance(v, list)} \
         or default_procedures()
     known = {(r[0], r[1]): r[2] for r in _DEFAULTS["strains"]}   # genotypes shipped since
-    PREFS["strains"] = [[sp, st, g or known.get((sp, st), "")] for sp, st, g in PREFS["strains"]] \
-        + [list(r) for r in _DEFAULTS["strains"]
-           if (r[0], r[1]) not in {(x[0], x[1]) for x in PREFS["strains"]}]
+    # ponytail: a strain removed in Options stays removed — until 2026.10.21 every shipped one
+    # came back at each start (the list grew back to 24)
+    PREFS["strains"] = [[sp, st, g or known.get((sp, st), "")] for sp, st, g in PREFS["strains"]]
     PREFS["digits"] = {k: int(v) for k, v in {**DIGITS, **PREFS["digits"]}.items()
                        if type(v) in num and k in DIGITS}
     lg = {**_DEFAULTS["log"], **PREFS["log"]}
@@ -526,12 +526,20 @@ def _set_species(a: Animal, species):
             _put(a, "genotype", "")
 
 
-def _put_event(ev: dict, key: str, text: str):
-    """A procedure's field typed; emptied, a field of its own kind goes (an added one stays)."""
+def _around(a: Animal | None) -> dict:
+    """The animal's fields a pre-filled value may depend on ("isotope = 99mTc")."""
+    return {"isotope": a.isotope, "molecule": a.molecule, **a.extra} if a else {}
+
+
+def _put_event(ev: dict, key: str, text: str, a: Animal | None = None):
+    """A procedure's field typed; emptied, a field of its own kind goes (an added one stays).
+    The pre-filled values depending on it follow (the agent: its induction)."""
+    old = dict(ev)
     ev[key] = text.strip()
     if not ev[key] and key in [f["name"] for f in PREFS["procedures"].get(
             ev.get("kind", ""), [])] + ["note"]:
         ev.pop(key)
+    prefill(ev, PREFS["procedures"].get(ev.get("kind", ""), []), _around(a), old)
 
 
 def _aspec(name: str) -> dict:
@@ -632,7 +640,7 @@ def _list_put(a: Animal, key, text, day):
             if not text:
                 return
             a.events.append({"kind": kind})
-        _put_event(_events_of(a, kind)[n], f, text)
+        _put_event(_events_of(a, kind)[n], f, text, a)
 
 
 def _cell_text(a: Animal, key, part, day) -> str:
@@ -904,7 +912,7 @@ def _csv_list(text: str) -> list[str]:
 
 # --------------------------------------------------------------------------- widgets
 class Section(QWidget):
-    """A titled area of the board, collapsible, with an optional '+' on the right."""
+    """A titled area of the board, collapsible, with an optional '+' right after its note."""
 
     add_clicked = Signal()
 
@@ -931,7 +939,6 @@ class Section(QWidget):
         h.addWidget(self._title)
         h.addSpacing(8)
         h.addWidget(self._note)
-        h.addStretch(1)
         if add_tip:
             b = QToolButton()
             b.setText("+")
@@ -941,6 +948,7 @@ class Section(QWidget):
                 f"font-weight:bold;color:{_ACCENT};}} QToolButton:hover{{background:#3d3d3d;}}")
             b.clicked.connect(self.add_clicked)
             h.addWidget(b)
+        h.addStretch(1)
         outer.addWidget(bar)
 
         self.body = QWidget()
@@ -1228,13 +1236,14 @@ class AnimalCard(QFrame):
                                                          "HH:MM", tw)
             h.addWidget(e1)
             h.addWidget(e2)
-            w.setToolTip((lo.get("what") or "Other activity that did not go in") + " — read "
-                         "by hand, taken off the injected activity")
+            w.setToolTip((lo.get("what") or "A correction to the injected activity: activity "
+                          "that did not go in") + " — read by hand, taken off the injected "
+                                                  "activity")
             e1.editingFinished.connect(lambda i=i, e=e1: self._set_loss(i, "mbq", e.text()))
             e2.editingFinished.connect(lambda i=i, e=e2: self._set_loss(i, "time", e.text(), e))
-            lab = QLabel(lo.get("what") or "other loss")
+            lab = QLabel(lo.get("what") or "correction")
             lab.setStyleSheet("color:#a0a0a0;")
-            f = _Field(w, "Remove this loss (Ctrl+Z brings it back)",
+            f = _Field(w, "Remove this correction (Ctrl+Z brings it back)",
                        lambda i=i: (self.a.losses.pop(i), self.changed.emit(),
                                     self.rebuild.emit()))
             g.addWidget(lab, r, 0)
@@ -1245,7 +1254,7 @@ class AnimalCard(QFrame):
         w_tail.setToolTip("Injection-site activity read on the dose calibrator, subtracted from "
                           "the injected activity.\nTyped here it replaces a counted tail vial; "
                           "leave it empty to use the vial.")
-        row(("tail", "tail (inj. site)", w_tail))
+        row(("tail", "tail (injection site)", w_tail))
 
         # the other fields in one order on every card: related ones together, unlisted last
         rank = {f.lower(): i for i, f in enumerate(ARRIVE_FIELDS)}
@@ -2981,8 +2990,8 @@ class AnimalWindow(QMainWindow):
                                      if gaps else f"{a.label}: every highlighted field filled")
 
     def _bio_more(self, g, r) -> int:
-        """Under the biodistribution info: the other losses of the dose and the notes, as
-        many as needed, each with its ×; + loss / note adds one."""
+        """Under the biodistribution info: the corrections to the injected activity and the
+        notes, as many as needed, each with its ×; + correction / note adds one."""
         a, day = self.a, self.main.study.day
 
         def x_button(fn, tip):
@@ -3003,13 +3012,13 @@ class AnimalWindow(QMainWindow):
                 e.editingFinished.connect(self._commit(
                     lambda i=i, f=f, e=e: _list_put(a, ("loss", i, f), e.text(), day)))
                 h.addWidget(e)
-            lab = QLabel("other loss (MBq, at)")
+            lab = QLabel("correction (MBq, at)")
             lab.setStyleSheet("color:#b0b0b0;")
-            lab.setToolTip("Activity that did not go in, read by hand — taken off the "
-                           "injected activity, like the empty syringe")
+            lab.setToolTip("A correction to the injected activity: activity that did not go "
+                           "in, read by hand — taken off it, like the empty syringe")
             g.addWidget(lab, r, 0)
             g.addWidget(box, r, 1)
-            g.addWidget(x_button(lambda i=i: a.losses.pop(i), "Remove this loss"), r, 2)
+            g.addWidget(x_button(lambda i=i: a.losses.pop(i), "Remove this correction"), r, 2)
             r += 1
         for i, text in enumerate(a.bio_notes):
             e = _edit(text, "a note on this animal's biodistribution")
@@ -3022,12 +3031,12 @@ class AnimalWindow(QMainWindow):
             g.addWidget(x_button(lambda i=i: a.bio_notes.pop(i), "Remove this note"), r, 2)
             r += 1
         add = QToolButton()
-        add.setText("+ loss / note")
+        add.setText("+ correction / note")
         add.setPopupMode(QToolButton.InstantPopup)
         add.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};}} QToolButton::menu-indicator{{image:none;}}")
         m = QMenu(add)
         m.setToolTipsVisible(True)
-        m.addAction("other loss (MBq, at)", lambda: (a.losses.append(
+        m.addAction("correction (MBq, at)", lambda: (a.losses.append(
             {"mbq": "", "time": "", "what": ""}), self._redraw())).setToolTip(
             "Activity that did not go in, read by hand (a cotton held on the tail…): on the "
             "card under the empty syringe, taken off the injected activity")
@@ -3037,27 +3046,45 @@ class AnimalWindow(QMainWindow):
         return r + 1
 
     def _procedures(self, g, r) -> int:
-        """ARRIVE item 9 beyond the tracer: one block per procedure — an injection before or
-        with it (blocking, Gelofusine…), an imaging session, tumour cells, surgery… — each
-        with its kind's fields (Options, Procedures) and any added to it."""
+        """ARRIVE item 9 beyond the tracer, in two parts — the animal's model, days or weeks
+        before (diet, treatment, tumour, surgery: a kind with a day among its fields), and the
+        study day's procedures (an injection before, with or after the tracer, an imaging
+        session, its anaesthesia…). The same list underneath, `Animal.events`."""
+        procs = PREFS["procedures"]
+        for title, tip, model in (
+                ("Model", "The animal's model, days or weeks before the study: diet, "
+                          "treatment, tumour, surgery — reported under ARRIVE item 9", True),
+                ("Procedures", "The study day's — reported under ARRIVE item 9, one line per "
+                               "procedure", False)):
+            r = self._events_part(g, r, title, tip,
+                                  lambda k, model=model: is_model(k, procs) == model)
+        return r
+
+    def _events_part(self, g, r, title, tip, mine) -> int:
+        """One part of the procedures: its head with + model / + procedure, then one block per
+        procedure of its kinds (`mine`) — its kind's fields (Options, Procedures) and any added
+        to it."""
         a = self.a
-        t = QLabel("Procedures")
+        t = QLabel(title)
         t.setStyleSheet("font-weight:600;color:#d9b44a;padding-top:10px;")
-        t.setToolTip("Reported under ARRIVE item 9, one line per procedure")
+        t.setToolTip(tip)
         g.addWidget(t, r, 0)
         add = QToolButton()
-        add.setText("+ procedure")
+        add.setText("+ model" if title == "Model" else "+ procedure")
         add.setPopupMode(QToolButton.InstantPopup)
         add.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};}} QToolButton::menu-indicator{{image:none;}}")
         m = QMenu(add)
-        for k in list(PREFS["procedures"]) + ["other…"]:
+        for k in [k for k in PREFS["procedures"] if mine(k)] + ([] if mine("") else ["other…"]):
             m.addAction(k, lambda k=k: self._add_event("" if k == "other…" else k))
 
         add.setMenu(m)
         g.addWidget(add, r, 1, Qt.AlignLeft)
-        g.addWidget(self._copy_button("procedures"), r, 2)
+        if not mine(""):                         # the study day's part: every procedure copied
+            g.addWidget(self._copy_button("procedures"), r, 2)
         r += 1
         for ev in a.events:
+            if not mine(ev.get("kind", "")):
+                continue
             head = QWidget()
             h = QHBoxLayout(head)
             h.setContentsMargins(0, 6, 0, 0)
@@ -3088,8 +3115,9 @@ class AnimalWindow(QMainWindow):
             kind = ev.get("kind", "")
             nth = [e is ev for e in _events_of(a, kind)].index(True)   # its kind's nth
             own = {f["name"] for f in PREFS["procedures"].get(kind, [])}
-            watched = {f["when"].split("=")[0].strip() for f in PREFS["procedures"].get(
-                kind, []) if "=" in f["when"]}           # fields others show by
+            watched = {w.split("=")[0].strip() for f in PREFS["procedures"].get(kind, [])
+                       for w in [f["when"]] + [d["when"] for d in f.get("defaults", [])]
+                       if "=" in w}              # fields others show by, or are pre-filled by
             rows: list[tuple[str, list[dict]]] = []      # fields sharing a line: one row
             for sp in ev_fields(ev, PREFS["procedures"]):
                 if sp["line"] and rows and rows[-1][0] == sp["line"]:
@@ -3112,7 +3140,7 @@ class AnimalWindow(QMainWindow):
                         n.setStyleSheet("color:#8d8d8d;")
                         hl.addWidget(n)
                     for x in self._field_widgets(a, sp, lambda ev=ev, f=sp["name"]: ev.get(
-                            f, ""), lambda v, ev=ev, f=sp["name"]: _put_event(ev, f, v),
+                            f, ""), lambda v, ev=ev, f=sp["name"]: _put_event(ev, f, v, a),
                             redraw=sp["name"] in watched):
                         hl.addWidget(x, 1)
                 g.addWidget(lab, r, 0)
@@ -3257,10 +3285,14 @@ class AnimalWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def _add_event(self, kind):
+        """A procedure, its pre-filled values in (an imaging: its anaesthesia too)."""
         again = bool(_events_of(self.a, kind))  # a CT after a SPECT: the same anaesthesia
+        procs, around = PREFS["procedures"], _around(self.a)
         self.a.events.append({"kind": kind})
+        prefill(self.a.events[-1], procs.get(kind, []), around)
         if kind in NEEDS_ANAESTHESIA and not again:
             self.a.events.append({"kind": "anaesthesia"})
+            prefill(self.a.events[-1], procs.get("anaesthesia", []), around)
             self.statusBar().showMessage(f"{kind} added, and its anaesthesia as a procedure of "
                                          "its own — × removes it if there was none", 8000)
         elif kind in NEEDS_ANAESTHESIA:
@@ -3298,7 +3330,7 @@ class AnimalWindow(QMainWindow):
                     out.append((self.LABEL.get(k, k), k, None, color))
             if name == self.GROUPS[0][0]:          # as many as the animal with the most
                 for n in range(max(len(a.losses) for a in st.animals)):
-                    out += [(f"other loss {n + 1} {lab}", ("loss", n, f), None, color)
+                    out += [(f"correction {n + 1} {lab}", ("loss", n, f), None, color)
                             for f, lab in (("mbq", "(MBq)"), ("time", "at"), ("what", "what"))]
                 out += [(f"note {n + 1}", ("bnote", n), None, color)
                         for n in range(max(len(a.bio_notes) for a in st.animals))]
@@ -3777,13 +3809,13 @@ class OptionsWindow(QMainWindow):
         shares, when it shows). + adds a row, − removes the selected, ↑ ↓ move one. Saved
         as edited. Returns (table, fill)."""
         heads = ["field", "type", "list (commas)", "example (grey while empty)", "line",
-                 "shown when"][:cols]
+                 "shown when", "pre-filled"][:cols]
         t = QTableWidget(0, len(heads))
         t.setHorizontalHeaderLabels(heads)
         t.verticalHeader().setVisible(False)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         t.horizontalHeader().setStretchLastSection(True)
-        for c, wd in enumerate((130, 115, 170, 125, 90)[:cols - 1]):
+        for c, wd in enumerate((130, 115, 170, 125, 90, 140)[:cols - 1]):
             t.setColumnWidth(c, wd)
         tips = ["The name the animal window shows", "text; list — the list below, anything "
                 "can still be typed; time · p.i. — HH:MM or after the injection (2 h p.i.), the "
@@ -3793,7 +3825,12 @@ class OptionsWindow(QMainWindow):
                 "APT62 (mouse, HS))", "Shown in grey while the field is "
                 "empty", "Fields with the same line name sit side by side on one line, under "
                 "that name (hardware: system, collimator)",
-                "Shown only when another field holds a value: modality = SPECT (or SPECT, PET)"]
+                "Shown only when another field holds a value: modality = SPECT (or SPECT, PET)",
+                "Filled in when the procedure is added, and again when what it depends on "
+                "changes (a value still as filled in follows): a value, or one per case, "
+                "semicolons between — 4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if "
+                "isotope = 99mTc (the procedure's fields, else the animal's); the one without "
+                "“if”: any other case"]
         for c in range(len(heads)):
             t.horizontalHeaderItem(c).setToolTip(tips[c])
         keys = list(FIELD_TYPES)
@@ -3803,7 +3840,7 @@ class OptionsWindow(QMainWindow):
             t.setRowCount(len(fields))
             for r, f in enumerate(fields):
                 for c, x in enumerate([f["name"], "", ", ".join(f["items"]), f["example"],
-                                       f["line"], f["when"]][:cols]):
+                                       f["line"], f["when"], defaults_text(f)][:cols]):
                     t.setItem(r, c, QTableWidgetItem(x))
                 cb = _combo(list(FIELD_TYPES.values()), FIELD_TYPES[f["type"]])
                 cb.activated.connect(lambda *_: read())
@@ -3816,7 +3853,7 @@ class OptionsWindow(QMainWindow):
             return [fdef(cell(r, 0), keys[t.cellWidget(r, 1).currentIndex()],
                          [x.strip() for x in re.split(r",(?![^()]*\))", cell(r, 2))   # not
                           if x.strip()], cell(r, 3),               # in brackets: (mouse, HS)
-                         cell(r, 4), cell(r, 5))
+                         cell(r, 4), cell(r, 5), *read_defaults(cell(r, 6)))
                     for r in range(t.rowCount()) if cell(r, 0)]
 
         def read(*_):
@@ -3884,7 +3921,7 @@ class OptionsWindow(QMainWindow):
                 x for x in TISSUE_NOTE if (x == k and on) or (x != k and x in PREFS["tissue_note"])]))
             v.addWidget(c)
         v.addSpacing(8)
-        g = QLabel("<b>Recorded tissue lists</b> — the Tissues' + opens one into a study. A "
+        g = QLabel("<b>Recorded tissue lists</b> — the empty tissue table's + opens one. A "
                    "name, then the tissues in vial order, commas between; “(empty)” for a bare "
                    "vial, “ctrl” a control tube.")
         g.setWordWrap(True)
@@ -3942,7 +3979,11 @@ class OptionsWindow(QMainWindow):
                           "time (HH:MM or after the injection, 2 h p.i.), a day (a date, the "
                           "animal's age then, or D-14) — the other ways are worked out, in "
                           "grey. Fields with the same “line” sit side by side; “shown when” "
-                          "keeps a field for one case (modality = SPECT). A note always "
+                          "keeps a field for one case (modality = SPECT); “pre-filled” fills "
+                          "it in when the procedure is added, by case if needed (4-5 % if "
+                          "agent = isoflurane). A kind with a day among its fields is the "
+                          "animal's model (+ model), the others the study day's "
+                          "(+ procedure). A note always "
                           "follows; “+ field” in the animal window adds one to one procedure. "
                           "Procedures already entered keep what they hold. Hover the headers.")
         h = QHBoxLayout()
@@ -3977,7 +4018,7 @@ class OptionsWindow(QMainWindow):
             if 0 <= i < len(names):
                 self._set("procedures", {**PREFS["procedures"], names[i]: fs})
 
-        table, fill = self._field_table(right, 6, save_fields)
+        table, fill = self._field_table(right, 7, save_fields)
 
         def show(i):
             fill(PREFS["procedures"].get(names[i], []) if 0 <= i < len(names) else [])
@@ -4425,7 +4466,7 @@ class OptionsWindow(QMainWindow):
         c.setChecked(s.subtract_tail)
         c.setToolTip("The tail vial, or the tail typed on an animal card (that wins)")
         c.toggled.connect(lambda on: self._rule(subtract_tail=on))
-        row("Injection site (tail)", ("subtract_tail",), c)
+        row("Tail (injection site)", ("subtract_tail",), c)
         isos = list(dict.fromkeys([a.isotope for a in s.animals if a.isotope]
                                   + list(s.half_lives)))
         if isos:
@@ -5398,11 +5439,9 @@ class MainWindow(QMainWindow):
         self.sec_animals.inner.addWidget(self.cards_scroll)
         v.addWidget(self.sec_animals)
 
-        self.sec_tissues = Section("Tissues", "Add a tissue, a recorded list, a file…")
-        self.m_tissues = QMenu(self)
-        self.m_tissues.aboutToShow.connect(lambda: self._tissue_menu(self.m_tissues))
-        self.sec_tissues.add_clicked.connect(
-            lambda: self.m_tissues.exec(QCursor.pos()))
+        # no + on the title: a list is opened into an empty table only (its hint's +), never
+        # over one being worked on — a tissue more is the + under the table (user, 2026.10.21)
+        self.sec_tissues = Section("Tissues")
         self.sec_tissues.bar.insertWidget(4, _sheet_link(
             "Which tissues the results and the report show, and in which order",
             self.output_win.open))
@@ -5436,6 +5475,29 @@ class MainWindow(QMainWindow):
         self.l_tissue_note.setStyleSheet("color:#8d8d8d;")
         self.sec_tissues.inner.addWidget(self.l_tissue_note)
         self.sec_tissues.inner.addWidget(self.t_tissues)
+        self.w_tissue_tools = QWidget()               # under the table, shown with it
+        tools = QHBoxLayout(self.w_tissue_tools)
+        tools.setContentsMargins(0, 2, 0, 0)
+        plus = QToolButton()
+        plus.setIcon(_plus(14))
+        plus.setToolTip("A tissue more, at the end of the list: type its name")
+        plus.setStyleSheet("QToolButton{border:none;}")
+        plus.clicked.connect(self.add_tissue)
+        out = AnimalCard._link("export", "This list out: as a file (one tissue a line — dropped "
+                               "or opened into another study), or recorded among the lists the "
+                               "empty table offers", lambda: None)
+        out.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};font-size:11px;}} "
+                          "QToolButton::menu-indicator{image:none;}")
+        om = QMenu(out)
+        om.addAction("As a file…", self._export_tissues)
+        om.addAction("As a recorded list…", self._record_list)
+        om.addAction("Edit the recorded lists…", lambda: self.show_options("Tissue table"))
+        out.setMenu(om)
+        out.setPopupMode(QToolButton.InstantPopup)
+        tools.addWidget(plus)
+        tools.addWidget(out)
+        tools.addStretch(1)
+        self.sec_tissues.inner.addWidget(self.w_tissue_tools)
         self.batch_bar = QWidget()
         QHBoxLayout(self.batch_bar).setContentsMargins(0, 4, 0, 0)
         self.sec_tissues.inner.addWidget(self.batch_bar)
@@ -5563,7 +5625,7 @@ class MainWindow(QMainWindow):
         return w
 
     def _tissue_menu(self, m: QMenu):
-        """The recorded lists, a file, the clipboard, one tissue — and recording this list."""
+        """The empty table's +: the recorded lists, a file, the clipboard, one tissue."""
         m.clear()
         for name, tissues in PREFS["tissue_lists"].items():
             a = m.addAction(f"{name}  ({len(tissues)})",
@@ -5575,8 +5637,6 @@ class MainWindow(QMainWindow):
         m.addAction("Paste a list (Ctrl+V)", self.paste)
         m.addAction("Add one tissue", self.add_tissue)
         m.addSeparator()
-        rec = m.addAction("Record this list…", self._record_list)
-        rec.setEnabled(bool(self.study.tissues))
         m.addAction("Edit the recorded lists…", lambda: self.show_options("Tissue table"))
 
     def _open_list(self, name):
@@ -5592,8 +5652,8 @@ class MainWindow(QMainWindow):
         if ok and name.strip():
             PREFS["tissue_lists"][name.strip()] = [x.name for x in self.study.tissues]
             _save_prefs()
-            self.statusBar().showMessage(f"Recorded “{name.strip()}” — the Tissues' + offers "
-                                         "it; Options › Tissue table edits it", 6000)
+            self.statusBar().showMessage(f"Recorded “{name.strip()}” — the empty tissue table's "
+                                         "+ offers it; Options › Tissue table edits it", 6000)
 
     def _toolbar(self):
         tb = QToolBar()
@@ -5990,8 +6050,24 @@ class MainWindow(QMainWindow):
         self._sync()
 
     def add_tissue(self):
+        """A tissue at the end, its name ready to type."""
         self.study.tissues.append(Tissue(f"tissue {len(self.study.tissues) + 1}"))
         self._sync()
+        r = next((r for r, (i, f) in enumerate(self._trows)
+                  if i == len(self.study.tissues) - 1 and not f), None)
+        if r is not None:
+            self.t_tissues.setCurrentCell(r, 0)
+            self.t_tissues.editItem(self.t_tissues.item(r, 0))
+
+    def _export_tissues(self):
+        """The tissues, one a line, in their order: a list another study opens or is dropped."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export the tissue list", _here(self, f"{self.study.name or 'tissues'}.txt"),
+            "One tissue a line (*.txt *.csv)")
+        if path:
+            Path(path).write_text("\n".join(t.name for t in self.study.tissues) + "\n",
+                                  encoding="utf-8")
+            self.statusBar().showMessage(f"{len(self.study.tissues)} tissues → {path}", 6000)
 
     def del_tissues(self, rows):
         """Del clears the selected typed values; on a tissue it removes the tissue, on a
@@ -6194,7 +6270,8 @@ class MainWindow(QMainWindow):
             self.e_name.setText(self.study.name)
             self.e_date.setDate(QDate.fromString(self.study.day.isoformat(), Qt.ISODate))
             for hint, there, widgets in (
-                    (self.h_tissues, bool(self.study.tissues), (self.t_tissues,)),
+                    (self.h_tissues, bool(self.study.tissues), (self.t_tissues,
+                                                                self.w_tissue_tools)),
                     (self.h_sources, bool(self.study.sources), (
                         self.t_sources, self.w_src_opts))):
                 hint.setVisible(not there)           # empty: a + and a line, no table
