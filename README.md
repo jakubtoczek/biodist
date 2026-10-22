@@ -6,6 +6,18 @@ Desktop app that turns **gamma counter** exports (Hidex AMG, Wizard2) and the la
 sheets into a biodistribution table — **%IA/g**, %IA, SUV, Bq, masses — ready to paste into
 Excel, with a report of how every value was made.
 
+- **Drop the files, check the guesses**: it works out what each counter file is (tares,
+  weighings, countings), matches the racks, places every vial on its animal and tissue, and
+  says why in its log — you check and correct, it never decides silently.
+- **Every measure kept**: countings and weighings repeated, recounted or typed by hand sit side
+  by side; rules you can see choose among them (target range, consensus, drift of the control
+  tubes), and flags say what looks off.
+- **The injected activity done right**: full and empty syringe, the tail and other corrections,
+  each decayed from its own time — across a clock change too.
+- **One study file**: the inputs, the rules, a copy of the counter's data, and the results once
+  you have **validated** them; a report (`.odt`, `.pdf`, `.xlsx`, `.md`, `.html`) of how every
+  number was made, ARRIVE items included.
+
 ## Install (Windows)
 
 1. On the GitHub page: **Code ▸ Download ZIP**, and extract it somewhere it can stay
@@ -47,18 +59,6 @@ anything for what it does.
 
 Every feature, a study step by step, the options and how the numbers are made:
 **[GUIDE.md](GUIDE.md)**. The version is in the window title and on every report.
-
-## Files
-
-- **Reads**: Hidex AMG AutoExport `.xlsx` (tare, weighing, counting, counting + weighing) and
-  Wizard2 `.csv`; weighing sheets (`.xlsx`, `.ods`, `.csv`, a balance's `.wt`); a tissue list
-  (a file or the clipboard); a study `.json` — BioDist's or InjAct's.
-- **Writes**: the study (`.json`, format `biodist-study` 2): animals, tissues, rules, each data
-  file's place (as it was, and from the study's folder — so the folder can move with its files),
-  its fingerprint and what it says of itself (counter, half-lives, efficiencies), and a copy of
-  its data, so the study opens the same when a file is gone. Results as `.xlsx` / `.csv`;
-  reports; the options (`biodist_options.json`); a log per session if wished.
-- The counter's files are never modified.
 
 ## Works with
 

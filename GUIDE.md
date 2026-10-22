@@ -156,7 +156,6 @@ so check Data sources and the log again after each file added.
 
 ---
 
-
 ### A study recorded at the bench
 
 An experiment recorded in **InjAct** (the Android bench app) is a BioDist study already: open
@@ -469,6 +468,20 @@ something else that time (a tail counted later in its slot): left out of the bla
 | An edit went wrong | Ctrl+Z (Ctrl+Y redoes) |
 | The study's files moved | found from the study's folder or where they were; else the study's copy (said in the log); a file changed since: you choose |
 | "clock change" in the log | a time falls in the hour the clock repeats (October) or skips (March): read as summer time — check it |
+
+---
+
+## Files
+
+- **Reads**: Hidex AMG AutoExport `.xlsx` (tare, weighing, counting, counting + weighing) and
+  Wizard2 `.csv`; weighing sheets (`.xlsx`, `.ods`, `.csv`, a balance's `.wt`); a tissue list
+  (a file or the clipboard); a study `.json` — BioDist's or InjAct's.
+- **Writes**: the study (`.json`, format `biodist-study` 2): animals, tissues, rules, each data
+  file's place (as it was, and from the study's folder — so the folder can move with its files),
+  its fingerprint and what it says of itself (counter, half-lives, efficiencies), and a copy of
+  its data, so the study opens the same when a file is gone. Results as `.xlsx` / `.csv`;
+  reports; the options (`biodist_options.json`); a log per session if wished.
+- The counter's files are never modified.
 
 ---
 
