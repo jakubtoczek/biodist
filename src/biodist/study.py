@@ -641,6 +641,33 @@ def clock_change_hour(t: _dt.datetime | None) -> bool:
         return False
 
 
+def results_table(study: "Study", res: "Result") -> dict | None:
+    """The table a validation records (FORMATS.md › Results): %IA/g, tissues down, animals
+    across, as the Results show them — their order and labels, each animal's group (its
+    molecule) and body weight, for SUV. None: no value yet."""
+    animals, tissues = study.output_animals(), study.output_tissues()
+
+    def num(v):
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else None
+    values = [[num(res.value(study, a.id, t.name, "pid_g")) for a in animals] for t in tissues]
+    if all(v is None for r in values for v in r):
+        return None
+    return {"what": "pid_g", "unit": "%IA/g",
+            "rows": [study.tissue_label(t.name) for t in tissues],
+            "cols": [study.animal_labels.get(a.id, a.label) for a in animals],
+            "col_keys": [a.id for a in animals],
+            "col_info": {"group": [a.molecule for a in animals],
+                         "weight_g": [a.weight_g for a in animals]},
+            "values": values}
+
+
+def validated(table: dict, by: str = "") -> dict:
+    """A `results` block holding `table`, validated now (by whoever typed their initials or
+    name, or no one); its inputs_sha256 is stamped when the study is written."""
+    return {"validated_at": jsonfile.now(), **({"validated_by": by} if by else {}),
+            "written_by": f"BioDist {__version__}", "inputs_sha256": "", "tables": [table]}
+
+
 def decay(a: float, t_from: _dt.datetime, t_to: _dt.datetime, hl_s: float) -> float:
     """Activity at t_to given activity `a` at t_from."""
     return a * math.exp(-math.log(2) * elapsed_s(t_from, t_to) / hl_s)
@@ -1083,10 +1110,15 @@ class Study:
     half_lives: dict[str, float] = field(default_factory=dict)   # isotope -> hours, the
     #                                              study's own (Options' until it is saved)
     embedded: dict[str, dict] = field(default_factory=dict)  # path -> the file's data, packed
+    results: dict = field(default_factory=dict)  # the results as validated (FORMATS.md ›
+    #             Results: validated_at, validated_by, written_by, inputs_sha256, tables); {}:
+    #             none validated. An empty inputs_sha256 is stamped at the next to_json
     id: str = ""                                 # given once (FORMATS.md), kept by every save
     other: dict = field(default_factory=dict)    # keys BioDist does not read (the bench app's
     #                                              molecules, shared…): carried, written back
     outside_edit = False                         # loaded: changed since saved (not a field)
+    results_changed = False                      # loaded: changed since its results were
+    #                                              validated, by another app or by hand
 
     # ------------------------------------------------------------------ persistence
     def to_json(self, stamp: bool = True, doc=None) -> str:
@@ -1108,6 +1140,11 @@ class Study:
             h["written_at"] = ""                     # same text, whenever it is taken
         d = {**h, **d}
         packed = d.pop("embedded")
+        if not d.get("results"):                    # none validated: no block
+            d.pop("results", None)
+        if self.results and not self.results.get("inputs_sha256"):   # validated now: what
+            fp = jsonfile.inputs_sha256(d)                           # they came from
+            d["results"]["inputs_sha256"] = self.results["inputs_sha256"] = fp
         text = json.dumps(d, indent=1, ensure_ascii=False)
         text = re.sub(r"\[\s*\n\s*([^\[\]{}]*?)\s*\]",       # [\n "107",\n "Liver"\n] -> one line
                       lambda m: "[" + re.sub(r",\s*\n\s*", ", ", m[1]) + "]", text)
@@ -1129,6 +1166,8 @@ class Study:
             raise jsonfile.FormatError("not a biodist-study file")
         jsonfile.version_of(d, FORMAT, FORMAT_VERSION,     # format 1: "biodist": 1, or older
                             lambda d: 1 if "biodist" in d or "animals" in d else None)
+        changed = isinstance(d.get("results"), dict) and bool(d["results"]) and \
+            d["results"].get("inputs_sha256") != jsonfile.inputs_sha256(d)
         sha = d.pop("saved_sha256", None)
         edited = sha is not None and sha != _fingerprint(d)
         d.pop("biodist", None)
@@ -1171,6 +1210,7 @@ class Study:
         s.manual = [Manual(**_known(Manual, m)) for m in d.get("manual", [])]
         s.id = s.id or jsonfile.new_id()             # format 1 had none: given now, saved next
         s.outside_edit = edited
+        s.results_changed = changed
         return s
 
     def save(self, path):
@@ -3062,7 +3102,7 @@ def read_animals(path) -> list[Animal]:
 
 
 # --------------------------------------------------------------------- self-check
-def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
+def _self_check(data_dir=r"C:\Code\BioDist\data\data_260903"):
     """Rebuild animal 107 of the 260903 experiment from the raw files and check the numbers."""
     d = Path(data_dir)
     tissues = read_column(d / "260903_tissue_list_indiv.xlsx")
@@ -3506,6 +3546,20 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert '"tissues": ["ctrl", "Adrenal"' in kept.to_json(), "short lists on one line"
     assert stamp(c1.path)["sha256"] == hashlib.sha256(Path(c1.path).read_bytes()).hexdigest()
     assert stamp(c1.path)["modified"][-6] in "+-", "an instant carries its offset"
+
+    # validated results: written with what they came from, said when the study changes after
+    rt = results_table(s, compute(s))
+    assert rt["rows"][:2] == ["Adrenal", "BAT"] and rt["col_keys"] == [a.id for a in s.output_animals()]
+    assert abs(rt["values"][rt["rows"].index("Liver")][0] - pidg("Liver")) < 1e-12
+    v = Study.from_json(s.to_json())
+    v.results = validated(rt, "JT")
+    back = Study.from_json(v.to_json())
+    assert back.results["validated_by"] == "JT" and back.results["tables"] == [rt]
+    assert len(back.results["inputs_sha256"]) == 64 and not back.results_changed
+    hand = json.loads(v.to_json())
+    hand["animals"][0]["weight_g"] = 99.0                # another app, or a hand edit
+    assert Study.from_json(json.dumps(hand)).results_changed
+    assert results_table(Study(), compute(Study())) is None
 
     # a clock change between two times is counted; a time in its hour is said
     oct25 = _dt.datetime(2026, 10, 24, 22, 0), _dt.datetime(2026, 10, 25, 4, 0)

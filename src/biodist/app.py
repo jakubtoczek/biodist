@@ -51,7 +51,7 @@ from .study import (
     OLD_KINDS, MODEL_KINDS, CORE_FIELDS, default_animal_fields, ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
     HALF_LIFE_S, ISOTOPES, KIND_LABEL, KINDS, PRESET_LABEL, ROLE_HELP, STRAINS, TIME_FORMATS,
     TISSUE_MAJOR, TISSUE_ROLES, UNITS, DIGITS, DRIFT_MODES, BASES, TOPS, EMPTY_TUBE, one_top,
-    DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue,
+    DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue, results_table, validated,
     age_weeks, at_imaging, at_injection, life_dates, when_views, imaging_label, auto_assign, compute, decay, format_date, format_time,
     guess_role, half_life_s, kind_of, names_summary, next_id, parse_time, propose,
     put_weights, read_animals, read_column, read_weights, recovery_pct, set_half_lives, strip_summary, tail_pct,
@@ -7633,15 +7633,61 @@ class MainWindow(QMainWindow):
                             + (" *" if self._snap != self._saved else ""))
 
     def _keep_or_save(self) -> bool:
-        """Before the study is replaced or the window closes: False means stay put."""
-        if not self._dirty():
+        """Before the study is replaced or the window closes: False means stay put. Unsaved
+        changes: save them (which asks to validate the results)? Saved, but its results not
+        validated: validate them now?"""
+        if self._dirty():
+            ans = QMessageBox.question(
+                self, APP_NAME, "Save the changes to this study first?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+            if ans == QMessageBox.Save:
+                return self.save_study()
+            return ans == QMessageBox.Discard
+        table = self._unvalidated()
+        if table is None or not self._path:
             return True
-        ans = QMessageBox.question(
-            self, APP_NAME, "Save the changes to this study first?",
-            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-        if ans == QMessageBox.Save:
-            return self.save_study()
-        return ans == QMessageBox.Discard
+        by = self._ask_validate(table, saving=False)
+        if by is None:
+            return False
+        if by is False:
+            return True
+        self.study.results = validated(table, by)
+        return self.save_study()
+
+    def _results_table(self) -> dict | None:
+        """The results as the Results window shows them (%IA/g), None while there is none."""
+        return results_table(self._eff, self.res) if self.res is not None and self._eff else None
+
+    def _unvalidated(self) -> dict | None:
+        """The results, when the study does not hold them validated as they are now."""
+        table = self._results_table()
+        return table if table and self.study.results.get("tables") != [table] else None
+
+    def _ask_validate(self, table: dict, saving: bool = True):
+        """Validate these results? The initials or name typed ("" for none), False for not,
+        None to cancel."""
+        d = QDialog(self)
+        d.setWindowTitle(f"{APP_NAME} — validate")
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel(("Validate the results?" if saving else "The results are not validated.")
+                           + f"\n{table['unit']}: {len(table['cols'])} animals × "
+                             f"{len(table['rows'])} tissues"))
+        who = QLineEdit()
+        who.setPlaceholderText("Initials or name (optional)")
+        v.addWidget(who)
+        bb = QDialogButtonBox()
+        ok = bb.addButton("Validate and save", QDialogButtonBox.AcceptRole)
+        no = bb.addButton("Save without validating" if saving else "Don't validate",
+                          QDialogButtonBox.DestructiveRole)
+        bb.addButton(QDialogButtonBox.Cancel)
+        v.addWidget(bb)
+        picked = []
+        bb.clicked.connect(lambda b: (picked.append(b), d.done(0)))
+        ok.setDefault(True)
+        d.exec()
+        if not picked or picked[0] not in (ok, no):
+            return None
+        return who.text().strip() if picked[0] is ok else False
 
     def closeEvent(self, ev):
         if self._keep_or_save():
@@ -7683,6 +7729,12 @@ class MainWindow(QMainWindow):
         self.runs.clear()
         self._reset_log()
         self.log(f"opened {path.name}")
+        r = self.study.results
+        if r:
+            self.log(f"results validated {r.get('validated_at', '')[:16].replace('T', ' ')}"
+                     + (f" by {r['validated_by']}" if r.get("validated_by") else "")
+                     + (" — the study changed since, outside BioDist" if self.study.results_changed
+                        else ""), "⚠" if self.study.results_changed else "✓")
         self._check_files()
         self._time_order()
         self._snap = None            # another study, not an edit of this one
@@ -7705,6 +7757,18 @@ class MainWindow(QMainWindow):
         for s in self.study.sources:             # what each file says of itself, always kept
             if s.path in self.runs:
                 s.meta = hidex.meta(self.runs[s.path])
+        table = self._results_table()            # the results: saved only validated
+        if table is None:
+            self.study.results = {}
+        elif self.study.results.get("tables") == [table]:
+            self.study.results["inputs_sha256"] = ""     # the same numbers: still validated
+        else:
+            by = self._ask_validate(table)
+            if by is None:
+                return False
+            self.study.results = {} if by is False else validated(table, by)
+            self.log("results validated" + (f" ({by})" if by else "") if by is not False
+                     else "saved without validating: the results are not kept in the study")
         try:
             self.study.save(self._path)
         except OSError as e:

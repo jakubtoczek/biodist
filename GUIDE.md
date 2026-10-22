@@ -319,6 +319,23 @@ Ctrl+R, or the green *Results* button.
   tube. BioDist offers it for a tissue weighing under ~2 mg that counts background (net under
   3 σ); the report's checks list it.
 
+### Validating the results
+
+Saving a study asks **Validate the results?** whenever the %IA/g table as the Results show it
+(its tissues, animals, labels and values) is not the one already validated in the study:
+
+- **Validate and save** — the table is kept in the study with the time, and your initials or
+  name if you typed them (nothing typed is fine too).
+- **Save without validating** — the study is saved, its results are not: they are computed again
+  when it is opened, but nothing outside BioDist can use them.
+- **Cancel** — nothing is saved.
+
+A change that leaves the table as it was (a note, a procedure) keeps the validation; one that
+changes a value, a label or the order asks again. Closing BioDist, opening another study or
+starting a new one with results saved but not validated asks too. Opened, the log says when the
+results were validated and by whom — and if the study was changed since by another app or by
+hand. **BioDistAn** reads only validated results.
+
 ---
 
 ## Report

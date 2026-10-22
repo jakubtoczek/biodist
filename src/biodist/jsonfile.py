@@ -6,6 +6,7 @@ identical to the suite's (suite.py checks). Run it for its self-check.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import time
@@ -118,11 +119,29 @@ def rel_path(path, doc) -> str:
 
 def locate(path, rel, doc) -> Path | None:
     """A data file a document points to: beside the document as it was (`rel`: the folder
-    moved), where it was (`path`: the document moved alone), or by its name beside the
-    document. None: not found."""
+    moved), where it was (`path`: the document moved alone), or the end of its old path under
+    the document's folder (`RAW/x.xlsx`, then `x.xlsx`: a folder moved with a document saved
+    before `rel`). None: not found. Which file it is, its `sha256` says."""
     base = Path(doc).parent
-    cands = ([base / rel] if rel else []) + ([Path(path), base / Path(path).name] if path else [])
+    parts = Path(path).parts if path else ()
+    tails = [base.joinpath(*parts[-n:]) for n in range(min(len(parts) - 1, 4), 0, -1)]
+    cands = ([base / rel] if rel else []) + ([Path(path)] if path else []) + tails
     return next((c.resolve() for c in cands if c.is_file()), None)
+
+
+# a format's own bookkeeping: not what its results are computed from
+BOOKKEEPING = {"biodist-study": ("saved_sha256", "embedded")}
+
+
+def inputs_sha256(d: dict) -> str:
+    """The fingerprint of what a document's `results` were computed from: the document
+    without its header, its `results` and its format's bookkeeping (FORMATS.md › Results).
+    A document changed since its results were validated no longer gives their
+    `inputs_sha256`."""
+    drop = {*HEADER, "results", *BOOKKEEPING.get(d.get("format"), ())}
+    body = {k: v for k, v in d.items() if k not in drop}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 if __name__ == "__main__":
@@ -168,7 +187,13 @@ if __name__ == "__main__":
         assert locate(f, r, new / "s.json") == f.resolve()           # the study alone moved
         os.replace(old, new)
         assert locate(f, r, new / "s.json") == (new / "RAW" / "c.xlsx").resolve()  # the folder
+        assert locate(f, "", new / "s.json") == (new / "RAW" / "c.xlsx").resolve()  # before rel
         (new / "RAW" / "c.xlsx").replace(new / "c.xlsx")
         assert locate(f, "", new / "s.json") == (new / "c.xlsx").resolve()   # by its name
         assert locate(f, r, Path(tmp) / "s.json") is None
+        doc = {"format": "biodist-study", "format_version": 2, "written_at": "x", "animals": [1],
+               "results": {"inputs_sha256": "?"}, "saved_sha256": "y", "embedded": {"a": 1}}
+        fp = inputs_sha256(doc)
+        assert fp == inputs_sha256({**doc, "written_at": "later", "embedded": {}, "results": {}})
+        assert fp != inputs_sha256({**doc, "animals": [2]}), "an input changed"
     print("jsonfile self-check ok")

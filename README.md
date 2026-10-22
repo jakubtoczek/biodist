@@ -42,7 +42,8 @@ anything for what it does.
 4. **Results** (Ctrl+R) — tissues down, animals across, in the unit you pick; click a cell for
    every counting and weighing behind it. **Report** (Ctrl+P) — the sections you tick, as
    `.xlsx`, `.odt`, `.pdf`, `.md` or `.html`.
-5. **Ctrl+S** saves the study as one `.json`.
+5. **Ctrl+S** saves the study as one `.json` and asks you to **validate the results** (your
+   initials or name if you like): only validated results are kept in the study.
 
 Every feature, a study step by step, the options and how the numbers are made:
 **[GUIDE.md](GUIDE.md)**. The version is in the window title and on every report.
@@ -65,6 +66,8 @@ Every feature, a study step by step, the options and how the numbers are made:
   then drop the counter's files. What InjAct records and BioDist does not show is kept, so the
   study opens again in InjAct. Options › Import reads InjAct's settings (isotopes, strains,
   procedures, animal fields), and InjAct imports BioDist's.
+- **BioDistAn** — statistics and figures from the study's validated results (%IA/g, or SUV
+  from the animals' body weights); a study not validated, or changed since, it does not open.
 
 ## Development
 

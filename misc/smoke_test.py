@@ -26,7 +26,7 @@ from biodist import report  # noqa: E402
 from biodist.app import PREFS, TC, MainWindow, Sheet  # noqa: E402
 from biodist.study import Manual  # noqa: E402
 
-DATA = Path(sys.argv[1] if len(sys.argv) > 1 else r"C:\Code\BioDist\data_260903")
+DATA = Path(sys.argv[1] if len(sys.argv) > 1 else r"C:\Code\BioDist\data\data_260903")
 FILES = ["260903_tissue_list_indiv.xlsx", "260903_injected_activity.xlsx",
          "Tare-001-20260902-161122-AutoExport.xlsx",
          "Tare-001-20260903-153146-AutoExport.xlsx",
@@ -277,6 +277,30 @@ tmp = Path(os.environ.get("TEMP", ".")) / "_biodist_smoke.json"
 w.study.save(tmp)
 w._load_study(tmp)
 assert abs(w.res.value(w._eff, "107", "Kidneys", "pid_g") - 143.2) < 3, "round trip"
+
+# saving asks to validate the results; not validated, they are not saved; closing asks again
+asked = []
+real_ask, w._ask_validate = w._ask_validate, lambda t, saving=True: asked.append(saving) or False
+w._path = tmp
+assert w.save_study() and asked == [True] and "results" not in json.loads(tmp.read_text("utf-8"))
+assert w._keep_or_save() and asked == [True, False], "closing: not validated, asked again"
+w._ask_validate = lambda t, saving=True: asked.append(saving) or "JT"
+assert w.save_study() and asked[-1] is True
+saved = json.loads(tmp.read_text("utf-8"))["results"]
+assert saved["validated_by"] == "JT" and saved["tables"][0]["unit"] == "%IA/g", saved.keys()
+assert len(saved["inputs_sha256"]) == 64
+n = len(asked)
+w.study.note = "a note: the numbers are the same"
+w.recompute()
+assert w.save_study() and len(asked) == n, "the same numbers: still validated, not asked"
+assert json.loads(tmp.read_text("utf-8"))["results"]["validated_by"] == "JT"
+assert w._keep_or_save() and len(asked) == n
+w._ask_validate = lambda t, saving=True: None               # Cancel
+w.study.tissue_labels = {"Kidneys": "Kidney (both)"}         # the table as shown changes
+w.recompute()
+assert not w.save_study(), "cancelled: not saved"
+w._ask_validate = real_ask
+w._path = None
 tmp.unlink(missing_ok=True)
 
 # the typed rows of the tissue grid: + mass opens a row, a cell typed there is a manual mass

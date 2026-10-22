@@ -413,7 +413,7 @@ def _self_check(data_dir):
 def _main(argv):
     if "--self-check" in argv:
         i = argv.index("--self-check")
-        d = argv[i + 1] if len(argv) > i + 1 else r"C:\Code\BioDist\data_260903"
+        d = argv[i + 1] if len(argv) > i + 1 else r"C:\Code\BioDist\data\data_260903"
         _self_check(d)
         return 0
     for p in argv:
