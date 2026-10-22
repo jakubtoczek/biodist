@@ -2,12 +2,11 @@
 
 <img src="src/biodist/assets/biodist.png" width="96" align="right" alt="BioDist icon">
 
-Desktop GUI to turn **gamma counter** exports (Hidex AMG) into a biodistribution table in
-**%IA/g** (% of injected activity per gram of tissue), ready to paste into Excel.
+Desktop app that turns **gamma counter** exports (Hidex AMG, Wizard2) and the lab's weighing
+sheets into a biodistribution table — **%IA/g**, %IA, SUV, Bq, masses — ready to paste into
+Excel, with a report of how every value was made.
 
 ## Install (Windows)
-
-No admin rights, no PATH or registry changes.
 
 1. On the GitHub page: **Code ▸ Download ZIP**, and extract it somewhere it can stay
    (`C:\Users\Public\BioDist`, or your Documents).
@@ -27,65 +26,47 @@ No admin rights, no PATH or registry changes.
 ## Use
 
 The window is a board, top to bottom: **Animals**, **Tissues**, **Data sources**, **Log**.
-**Drop files anywhere on it** — the counter's exports, the tissue list, a saved study — and
-BioDist puts each one where it belongs. Hover anything for what it does. Every feature, a
-study step by step and how the numbers are made: **[the user guide](GUIDE.md)**.
+**Drop files anywhere on it** — the counter's exports, a weighing sheet, the tissue list, a
+saved study or an InjAct recording — and BioDist puts each one where it belongs. Hover
+anything for what it does.
 
-- **Animals** — a card per animal: ID, weight, isotope and tracer, syringe full and empty
-  with their times, injection time, tail (injection site: activity left there), the
-  corrections to the injected activity. **+** adds an animal; **⤢** opens the animal window
-  for everything else — there, **+ model** (what was done days before: diet, treatment,
-  tumour, surgery) and **+ procedure** (the study day's: injections before, with or after the
-  tracer, imaging, anaesthesia), each with its fields pre-filled (Options › Procedures).
-- **Tissues** — the vials in counting order. While the table is empty, its **+** loads a
-  list (a recorded one, a file or the clipboard); then the **+** under the table adds one
-  tissue, and **export** writes the list to a file or records it. Each tissue has a
-  **role**: `tissue`, `tail`, `blank` (an empty control
-  tube) or `standard`. **+** on a tissue adds a row to type a mass or an activity measured
-  apart (paraffin, dose calibrator). A **weighing sheet** dropped in (`.xlsx`, `.ods`,
-  `.csv`, a balance's `.wt`) fills those rows: masses, or tube weights — an empty-tube sheet
-  is the tares, its full tubes can come later (another sheet, the counter's run).
-- **Data sources** — the counter's files, a row each. BioDist works out what each one is
-  (tare, weight, count, count + weight), matches the racks, spots recounts and places the
-  vials on animals and tissues; the log says why, file by file — just check it. Click a file
-  (▸) to see its vials and place them by hand.
-- **Log** — what happened and what looks wrong (✗ ⚠), and when it is resolved (✓).
+1. **Animals** — a card per animal: ID, weight, isotope and tracer, syringe full and empty
+   with their times, injection time, tail (injection site), the other corrections to the
+   injected activity; **⤢** for everything else (the animal's information, **+ model**,
+   **+ procedure**).
+2. **Tissues** — the vials in counting order, each with its role (`tissue`, `tail`, `blank`,
+   `standard`); **+** on a tissue for a mass or an activity measured apart (dose calibrator).
+3. **Data sources** — the counter's files: BioDist works out what each one is (tare, weight,
+   count, count + weight) and places the vials on animals and tissues; **check it**, and the
+   log's ✗ and ⚠.
+4. **Results** (Ctrl+R) — tissues down, animals across, in the unit you pick; click a cell for
+   every counting and weighing behind it. **Report** (Ctrl+P) — the sections you tick, as
+   `.xlsx`, `.odt`, `.pdf`, `.md` or `.html`.
+5. **Ctrl+S** saves the study as one `.json`.
 
-**Ctrl+S** saves the study as one `.json`. It keeps a copy of the counter files' data, so it
-opens the same when they are moved.
+Every feature, a study step by step, the options and how the numbers are made:
+**[GUIDE.md](GUIDE.md)**. The version is in the window title and on every report.
 
-### Results (Ctrl+R)
+## Files
 
-Tissues down, animals across. **data** picks the unit (%IA/g, %IA, SUV, Bq, mass…);
-**show** adds rows (injected activity, activity at the SPECT / PET start…); **highlight**
-picks the flags that tint a cell; **▤** sets which animals and tissues show, in which order.
+- **Reads**: Hidex AMG AutoExport `.xlsx` (tare, weighing, counting, counting + weighing) and
+  Wizard2 `.csv`; weighing sheets (`.xlsx`, `.ods`, `.csv`, a balance's `.wt`); a tissue list
+  (a file or the clipboard); a study `.json` — BioDist's or InjAct's.
+- **Writes**: the study (`.json`, format `biodist-study` 2): animals, tissues, rules, each data
+  file's place (as it was, and from the study's folder — so the folder can move with its files),
+  its fingerprint and what it says of itself (counter, half-lives, efficiencies), and a copy of
+  its data, so the study opens the same when a file is gone. Results as `.xlsx` / `.csv`;
+  reports; the options (`biodist_options.json`); a log per session if wished.
+- The counter's files are never modified.
 
-Click a cell: the side panel (**sources**) shows its countings and weighings side by side,
-ticked where in use, ⚠ where something looks off (hover for why). Click a row to use it
-alone (Ctrl+click adds or removes one; a counting's energy window is picked in its row),
-then **Apply** to keep it for the selected cells; **Back to the rules** drops it. **empty
-tube** marks a tube that held nothing: no value.
+## Works with
 
-**⧉** copies the table (Ctrl+C the selection); **Export…** writes `.xlsx` / `.csv`.
+- **InjAct** (Android, at the bench) — its experiment file *is* a BioDist study: open it here,
+  then drop the counter's files. What InjAct records and BioDist does not show is kept, so the
+  study opens again in InjAct. Options › Import reads InjAct's settings (isotopes, strains,
+  procedures, animal fields), and InjAct imports BioDist's.
 
-### Report (Ctrl+P)
-
-Tick the sections, drag them in order, then **Save report…** — `.xlsx` (a sheet per
-section), `.odt` (Word), `.pdf`, `.md` or `.html`.
-
-### Options
-
-To choose various options. **Export…** writes them all to a `.json`, **Import…** reads one
-back. A settings file from the bench app at the injection (its isotopes and half-lives,
-strains, procedures, whether the tail is subtracted) changes only those; the rest stays.
-**Procedures**: each kind's fields, and what each is **pre-filled** with when the procedure
-is added — a value, or one per case (`4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if
-isotope = 99mTc`: the procedure's fields, else the animal's); a change of what it depends
-on carries it along. A kind with a date among its fields is the animal's model.
-
-The version is in the window title and on every report.
-
-## Dev
+## Development
 
 ```
 uv run python -m biodist                         # launch
@@ -96,4 +77,9 @@ uv run python misc/bump.py                       # stamp today's date as the ver
 ```
 
 The three checks read reference exports kept outside this repository (not shared); their
-folder can be given at the end of the command.
+folder can be given at the end of the command. `study.py` is the model and maths (no Qt),
+`app.py` the window, `hidex.py` the counter files' reader.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).

@@ -98,7 +98,10 @@ was made. Everything is kept in one study file.
 - Measures that do not agree with the others (the consensus) are flagged, and can be left out.
 - Control tubes can correct every weighing after the tares for balance drift.
 - A tube that weighs about nothing and counts background is offered to be marked empty.
-- The study keeps its half-lives; a counter file that decay-corrects with another one is said.
+- The study keeps its half-lives; a counter file that decay-corrects with another one is said,
+  and what the file said is kept with it.
+- Times across a clock change are counted in real time (22:00 → 04:00 over the October change:
+  7 h); a time in the hour the clock repeats or skips is said in the log.
 - Cross-checks: a count file placed nowhere, rounds that each miss an animal the other
   counted, two files reading the same vials placed on different animals.
 
@@ -107,8 +110,9 @@ was made. Everything is kept in one study file.
   tables in any unit, checks, raw counts, repeated measures.
 - Saved as `.xlsx`, `.odt` (Word), `.pdf`, `.md` or `.html`.
 - A log of what happened and what looks wrong, saved per session if wished.
-- The study file keeps the counter files' data: it opens the same when they are moved, and
-  says when a file changed since.
+- The study file keeps the counter files' data and where they are, also from its own folder:
+  move the study's folder with its files and it opens on them; move the study alone and it
+  still finds them; a file gone, its copy is used; a file changed since, you choose.
 - Undo / redo of every edit (Ctrl+Z / Ctrl+Y).
 
 ---
@@ -152,6 +156,19 @@ so check Data sources and the log again after each file added.
 
 ---
 
+
+### A study recorded at the bench
+
+An experiment recorded in **InjAct** (the Android bench app) is a BioDist study already: open
+its `.json` here (drop it, or Ctrl+O). The animals, their syringes, injection, tail and other
+corrections, the tissues read in the dose calibrator or weighed, the molecules and their
+radiolabelling, the animals' information and procedures are filled in; then drop the counter's
+files as usual. What InjAct keeps that BioDist does not show (how each reading was displayed on
+the calibrator, what the experiment's animals share) is kept when BioDist saves the study, so it
+opens again in InjAct. Options › Import reads InjAct's settings, and InjAct imports BioDist's.
+
+---
+
 ## The board
 
 The main window, top to bottom. Each section folds (▾) and shows its count.
@@ -186,8 +203,8 @@ A card per animal. The fields:
 - **+ correction / note**: a correction to the injected activity — activity that did not go
   in (a cotton on the tail…), taken off it; notes on the biodistribution.
 - **Model** — **+ model** and a kind: what was done days or weeks before (diet, treatment
-  with its start and end, tumour, surgery with its own anaesthesia and analgesia). A kind with
-  a date among its fields is the model's.
+  with its start and end, tumour, surgery with its own anaesthesia and analgesia). Which kinds
+  are the model is ticked in Options › Procedures.
 - **Procedures** — **+ procedure** and a kind. The first imaging adds its anaesthesia as a
   procedure of its own — a CT added to a SPECT shares it; SPECT/CT typed as one modality
   becomes two sessions. Each kind opens with its fields (Options › Procedures), pre-filled
@@ -312,7 +329,7 @@ Ctrl+P. The sections in a list — tick, drag to reorder, unfold (▸) for what 
 |---|---|
 | General | study, animals, tissues, isotope, molecule, counting efficiency per window; values chosen by hand; the rules (off by default); software and date |
 | Sources | counting efficiencies; the data files (those used, or all with what each gave); measures typed by hand |
-| Animals | the animals; procedures before the study day; the study day (tracer, injection, losses, imaging, euthanasia) |
+| Animals | the animals; procedures before the study day; the study day (tracer, injection, corrections, imaging, euthanasia) |
 | ARRIVE check | what is missing, or every item per animal |
 | Tissue values | one table per unit, its layout and decimals — copy it for another unit |
 | Checks | the flagged values and what the log found |
@@ -328,7 +345,9 @@ same list is in Options › Report.
 ## Options
 
 Saved as they change in `biodist_options.json` beside `BioDist.bat`; Ctrl+Z undoes;
-Export / Import / Reset to defaults.
+Export / Import / Reset to defaults. **Import** reads BioDist's options, or InjAct's settings —
+then only what the two share changes (isotopes and half-lives; strains, procedures, animal
+fields, whether the tail is subtracted); the rest stays.
 
 | page | |
 |---|---|
@@ -336,7 +355,8 @@ Export / Import / Reset to defaults.
 | Formats | how times and dates are shown; numbers as typed or tidied |
 | Isotopes | names and half-lives |
 | Species and strains | strains per species, their genotype |
-| Procedures | the kinds, and each kind's fields: type (text, list, time · p.i., date · age · D-n), list items, example, shared line, shown when (`modality = SPECT`), pre-filled (`isoflurane`; by case: `4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if isotope = 99mTc`) |
+| Animal fields | the animal's information, field by field as Procedures' (type, list, example, pre-filled — on a new animal and by case: `SPF if supplier = Janvier`), and whether InjAct asks for it at the bench; the core fields (species, strain, the dates, route, euthanasia…) can't be removed or renamed |
+| Procedures | the kinds — ticked **model**: done days or weeks before (+ model), else the study day's (+ procedure) — and each kind's fields: type (text, list, time · p.i., date · age · D-n), list items, example, shared line, shown when (`modality = SPECT`), pre-filled (`isoflurane`; by case: `4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if isotope = 99mTc`), asked at the bench or not |
 | Tissue table | what a cell shows, the units typed in, the line over the table, the recorded tissue lists |
 | Data sources | what shows under a file's vials, how they are laid out, how the guess works |
 | Rules | the rules of the study open (below), expected ranges per tissue |
@@ -430,7 +450,8 @@ something else that time (a tail counted later in its slot): left out of the bla
 | A count is CPM only, no %IA | no counting efficiency for that window: Data sources ▸ efficiencies |
 | A value seems off | click it in the Results: every source side by side, why it is flagged |
 | An edit went wrong | Ctrl+Z (Ctrl+Y redoes) |
-| The study's files moved | the study keeps their data; it says when a file changed since |
+| The study's files moved | found from the study's folder or where they were; else the study's copy (said in the log); a file changed since: you choose |
+| "clock change" in the log | a time falls in the hour the clock repeats (October) or skips (March): read as summer time — check it |
 
 ---
 
