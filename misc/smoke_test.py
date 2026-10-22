@@ -495,7 +495,7 @@ w.animal_win._step(True)
 app.processEvents()
 assert len(w.study.animals[-1].events) == n, "undone in the animal window"
 # the every-animal table holds the procedures, and the corrections
-w.study.animals[0].losses.append({"mbq": "0.3", "time": "12:30", "what": "cotton"})
+w.study.animals[0].corrections.append({"mbq": "0.3", "time": "12:30", "what": "cotton"})
 w.animal_win.show_all()
 app.processEvents()
 heads = [w.animal_win.sheet.item(r, 0).text() for r in range(w.animal_win.sheet.rowCount())]
@@ -532,7 +532,7 @@ if len(w.study.animals) > 1:
     assert len(ticks) == len(w.study.animals) and not ticks[1].isEnabled() and \
         ticks[0].isEnabled(), [x.text() for x in ticks]
 w.study.animals[-1].events.clear()
-w.study.animals[0].losses.clear()
+w.study.animals[0].corrections.clear()
 for a in w.study.animals:
     a.show.pop("imaging 2 · start", None)
 w.animal_win.close()
@@ -540,13 +540,31 @@ w.animal_win.close()
 # Options: a window of its own, exported and imported as JSON
 from biodist.app import _load_prefs, _save_prefs  # noqa: E402
 w.show_options()
-assert w.options_win.pages.count() == w.options_win.topics.count() == 12
+assert w.options_win.pages.count() == w.options_win.topics.count() == 13
 tmp = Path(os.environ.get("TEMP", ".")) / "_biodist_options.json"
 keep = dict(PREFS)
 assert _save_prefs(tmp)
+saved = json.loads(tmp.read_text(encoding="utf-8"))      # header, the shared blocks, biodist
+assert (saved["format"], saved["format_version"]) == ("biodist-options", 2), list(saved)[:5]
+assert saved["in_vivo"]["procedures"][0]["kind"] == "pre/co/post-injection" and \
+    [p["kind"] for p in saved["in_vivo"]["procedures"] if p["model"]] == PREFS["model_kinds"]
+assert "card_rows" in saved["biodist"] and "strains" not in saved["biodist"]
+assert saved["nuclides"]["isotopes"][0] == ["99mTc", 6.00718] and "isotopes" not in saved["in_vivo"]
 PREFS["card_rows"], PREFS["strains"] = 99, "junk"
 _load_prefs(tmp)
 assert PREFS == keep, "options round trip"
+# another app's settings (the bench app's, version 3): its shared blocks only
+tmp.write_text(json.dumps({"format": "injact-settings", "format_version": 3, "nuclides": {
+    "isotopes": [["99mTc", 6.00718]]}, "in_vivo": {"procedures": [{"kind": "imaging", "model": False,
+    "fields": [{"name": "modality"}]}, {"kind": "diet", "model": True, "fields": []}],
+    "animal_fields": [{"name": "cage", "type": "text"}]}, "injact": {"unit": "MBq"}}),
+    encoding="utf-8")
+PREFS["card_rows"] = 7
+_app._read_prefs(tmp)
+assert PREFS["card_rows"] == 7 and list(PREFS["procedures"]) == ["imaging", "diet"]
+assert PREFS["model_kinds"] == ["diet"] and PREFS["animal_fields"][0]["name"] == "cage"
+assert {"species", "euthanasia"} <= {f["name"] for f in PREFS["animal_fields"]}, "core kept"
+_load_prefs(got=json.loads(json.dumps(keep)))
 # the bench app's settings hold only some options: those change, the rest stays
 tmp.write_text(json.dumps({"isotopes": [["99mTc", 6.00718], ["47Sc", 80.4]], "strains": [["mouse", "BALB/c", ""]],
                            "procedures": {"imaging": [{"name": "modality", "type": "list", "items": ["SPECT"]}]},

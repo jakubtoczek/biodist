@@ -44,11 +44,11 @@ from PySide6.QtWidgets import (
 
 from shiboken6 import isValid
 
-from . import __version__, hidex, report
+from . import __version__, hidex, jsonfile, report
 from . import study as _study
 from .study import (
     NEEDS_ANAESTHESIA, split_modality, prefill, is_model, defaults_text, read_defaults,
-    OLD_KINDS, ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
+    OLD_KINDS, MODEL_KINDS, CORE_FIELDS, default_animal_fields, ANIMAL_MAJOR, ARRIVE_FIELDS, DATE_FORMATS, EVENT_FIELDS, EVENT_NEEDED, FIELD_TIP,
     HALF_LIFE_S, ISOTOPES, KIND_LABEL, KINDS, PRESET_LABEL, ROLE_HELP, STRAINS, TIME_FORMATS,
     TISSUE_MAJOR, TISSUE_ROLES, UNITS, DIGITS, DRIFT_MODES, BASES, TOPS, EMPTY_TUBE, one_top,
     DT_VALID, DT_WARN, Animal, Manual, Result, Source, Study, Tissue,
@@ -154,6 +154,8 @@ PREFS = {"isotopes": [list(x) for x in ISOTOPES],                     # name, h
          "result_flags_menu": [k for k, _ in RESULT_FLAGS],
          # the fields: how each is typed (text, list, time, date), its list, its example
          "procedures": default_procedures(),   # kind -> its fields (Options › Procedures)
+         "model_kinds": list(MODEL_KINDS),     # the kinds that are the animal's model
+         "animal_fields": default_animal_fields(),   # Options › Animal fields
          "tissue_lists": {},             # recorded tissue lists: name -> tissues, in vial order
          "digits": dict(DIGITS), "details_all": False,
          "embed": True,                  # a saved study keeps its files' data (opens without them)
@@ -255,15 +257,61 @@ def options_found() -> bool:
         return False
 
 
+OPTIONS_FORMAT, OPTIONS_VERSION = "biodist-options", 2      # FORMATS.md; 1: flat, no header
+# what the apps share, a block by domain (FORMATS.md; the bench app's settings hold the same)
+SHARED_PREFS = ("isotopes",                                              # "nuclides"
+                "strains", "procedures", "model_kinds", "animal_fields", "subtract_tail")  # "in_vivo"
+SHARED_BLOCKS = ("nuclides", "in_vivo")
+
+
+def _from_shared(got: dict) -> dict:
+    """A settings file's shared blocks as options: `nuclides`' isotopes; `in_vivo`'s rest, its
+    procedures (a list of kinds) as kind -> fields plus the kinds that are the model."""
+    nuc, block = (got.get(k) if isinstance(got.get(k), dict) else {} for k in SHARED_BLOCKS)
+    out = {k: nuc[k] for k in ("isotopes",) if k in nuc}
+    out.update({k: block[k] for k in ("strains", "animal_fields", "subtract_tail") if k in block})
+    kinds = [p for p in block.get("procedures", []) if isinstance(p, dict)
+             and str(p.get("kind", "")).strip()] if isinstance(block.get("procedures"), list) else []
+    if kinds:
+        out["procedures"] = {str(p["kind"]).strip(): p.get("fields", []) for p in kinds}
+        out["model_kinds"] = [str(p["kind"]).strip() for p in kinds if p.get("model") is True]
+    return out
+
+
+def _shared() -> dict:
+    return {"nuclides": {"isotopes": PREFS["isotopes"]},
+            "in_vivo": {"strains": PREFS["strains"],
+                        "procedures": [{"kind": k, "model": k in PREFS["model_kinds"], "fields": f}
+                                       for k, f in PREFS["procedures"].items()],
+                        "animal_fields": PREFS["animal_fields"],
+                        "subtract_tail": PREFS["subtract_tail"]}}
+
+
+def _prefs_text() -> str:
+    """The options file: its header, what the apps share, then BioDist's own."""
+    return jsonfile.dumps({**_shared(), "biodist": {
+        k: v for k, v in PREFS.items() if k not in SHARED_PREFS}},
+        OPTIONS_FORMAT, OPTIONS_VERSION, f"BioDist {__version__}")
+
+
+def _flat_prefs(got: dict) -> dict:
+    """An options file as the options' keys: version 2's blocks, or version 1 as it is."""
+    if not any(k in got for k in (*SHARED_BLOCKS, "biodist")):
+        return got
+    return {**(got.get("biodist") if isinstance(got.get("biodist"), dict) else {}),
+            **_from_shared(got)}
+
+
 def _load_prefs(path: Path | None = None, got=None):
-    """Options from a JSON file (or a dict); what is missing or malformed keeps its default."""
+    """Options from a JSON file (or a dict); what is missing or malformed keeps its default.
+    A file from a newer version is read as far as it is understood."""
     path = path or OPTIONS_FILE
     if got is None:
         try:
-            got = json.loads(path.read_text(encoding="utf-8"))
+            got = jsonfile.read(path)
         except (OSError, ValueError):
             got = {}
-    got = got if isinstance(got, dict) else {}
+    got = _flat_prefs(got) if isinstance(got, dict) else {}
     num = (int, float)
     for k, v in _DEFAULTS.items():
         g = got.get(k)
@@ -289,6 +337,15 @@ def _load_prefs(path: Path | None = None, got=None):
     PREFS["procedures"] = {OLD_KINDS.get(str(k), str(k)): [f for x in v if (f := clean_fdef(x))]
                            for k, v in PREFS["procedures"].items() if isinstance(v, list)} \
         or default_procedures()
+    if "model_kinds" not in got:                 # before 2026.10.21: the usual ones
+        PREFS["model_kinds"] = [k for k in MODEL_KINDS if k in PREFS["procedures"]]
+    PREFS["model_kinds"] = [str(k) for k in PREFS["model_kinds"] if str(k) in PREFS["procedures"]]
+    fields = [f for x in PREFS["animal_fields"] if (f := clean_fdef(x))]
+    shipped = {f["name"]: f for f in default_animal_fields()}
+    for f in fields:                             # core: what the apps rely on, stays core
+        f["core"] = f["name"] in CORE_FIELDS
+    have = {f["name"] for f in fields}
+    PREFS["animal_fields"] = fields + [shipped[n] for n in CORE_FIELDS if n not in have]
     known = {(r[0], r[1]): r[2] for r in _DEFAULTS["strains"]}   # genotypes shipped since
     # ponytail: a strain removed in Options stays removed — until 2026.10.21 every shipped one
     # came back at each start (the list grew back to 24)
@@ -359,14 +416,18 @@ def _load_prefs(path: Path | None = None, got=None):
 
 
 def _read_prefs(path: Path):
-    """Options from a file: BioDist's own (every option), or the bench app's settings (an
-    "injact" key) — its isotopes, strains, procedures and subtract_tail change, the rest stays."""
+    """Options from a file: BioDist's own (every option), or another app's settings — only
+    the blocks BioDist reads (FORMATS.md): the bench app's `nuclides` and `in_vivo` (before
+    its version 3, its keys beside an "injact" one) change, the rest stays."""
     try:
-        got = json.loads(path.read_text(encoding="utf-8"))
+        got = jsonfile.read(path)
     except (OSError, ValueError):
         got = None
-    if isinstance(got, dict) and "injact" in got:
-        _load_prefs(got={**json.loads(json.dumps(PREFS)), **{k: v for k, v in got.items() if k != "injact"}})
+    here = json.loads(json.dumps(PREFS))
+    if isinstance(got, dict) and got.get("format") not in (None, OPTIONS_FORMAT):
+        _load_prefs(got={**here, **_from_shared(got)})
+    elif isinstance(got, dict) and "injact" in got:
+        _load_prefs(got={**here, **{k: v for k, v in got.items() if k != "injact"}})
     else:
         _load_prefs(path)
 
@@ -384,7 +445,7 @@ def _save_prefs(path: Path | None = None) -> bool:
             h["fwd"].clear()
         h["now"] = [now]
     try:
-        path.write_text(json.dumps(PREFS, indent=1, ensure_ascii=False), encoding="utf-8")
+        jsonfile.write_text(path, _prefs_text())
         return True
     except OSError:
         return False
@@ -400,7 +461,7 @@ def _prefs_step(back: bool) -> bool:
     h["now"] = [src.pop()]
     _load_prefs(got=json.loads(h["now"][0]))
     try:
-        OPTIONS_FILE.write_text(json.dumps(PREFS, indent=1, ensure_ascii=False), encoding="utf-8")
+        jsonfile.write_text(OPTIONS_FILE, _prefs_text())
     except OSError:
         pass
     return True
@@ -465,10 +526,22 @@ def _get(a: Animal, name) -> str:
 
 
 def _put(a: Animal, name, value):
+    old = dict(a.extra)
     if str(value).strip():
         a.extra[_xkey(a, name)] = str(value).strip()
     else:
         a.extra.pop(_xkey(a, name), None)
+    _fill_animal(a, old)
+
+
+def _fill_animal(a: Animal, old: dict | None = None):
+    """The animal's information pre-filled (Options › Animal fields): what is empty, by case
+    too (`health status: SPF if supplier = Janvier`); after a change (`old`), what depended on
+    it follows. The fields with their own widgets (dates, ages) are left alone."""
+    fs = [f for f in PREFS["animal_fields"] if f["name"] not in ("DOB", "age", "arrival",
+                                                                  "age at arrival")]
+    around = {"isotope": a.isotope, "molecule": a.molecule}
+    prefill(a.extra, fs, around, old)
 
 
 def _has(a: Animal, key) -> bool:
@@ -543,9 +616,10 @@ def _put_event(ev: dict, key: str, text: str, a: Animal | None = None):
 
 
 def _aspec(name: str) -> dict:
-    """How one of the animal's fields is typed (fixed: study.ANIMAL_SPECS); not listed: text,
-    or a time when its name says so ('sacrifice time')."""
-    got = _study.ANIMAL_SPECS.get(name) or next((f for k, f in _study.ANIMAL_SPECS.items()
+    """How one of the animal's fields is typed: Options › Animal fields, else
+    study.ANIMAL_SPECS; not listed: text, or a time when its name says so ('sacrifice time')."""
+    got = next((f for f in PREFS["animal_fields"] if f["name"].lower() == name.lower()), None) \
+        or _study.ANIMAL_SPECS.get(name) or next((f for k, f in _study.ANIMAL_SPECS.items()
                                                  if k.lower() == name.lower()), None)
     return got or fdef(name, "time" if _study.timed("", name.lower()) else "text")
 
@@ -611,7 +685,7 @@ def _list_cell(a: Animal, key, day) -> str:
     field)."""
     what, n = key[0], key[-2] if key[0] == "ev" else key[1]
     if what == "loss":
-        lo = a.losses[n] if n < len(a.losses) else {}
+        lo = a.corrections[n] if n < len(a.corrections) else {}
         v = lo.get(key[2], "")
         return _shown(v, day) if key[2] == "time" else v
     if what == "bnote":
@@ -623,11 +697,11 @@ def _list_cell(a: Animal, key, day) -> str:
 def _list_put(a: Animal, key, text, day):
     if key[0] == "loss":
         n, f = key[1], key[2]
-        while len(a.losses) <= n:
-            a.losses.append({"mbq": "", "time": "", "what": ""})
-        a.losses[n][f] = _typed(a.losses[n][f], text, day) if f == "time" else text
-        while a.losses and not any(a.losses[-1].values()):
-            a.losses.pop()
+        while len(a.corrections) <= n:
+            a.corrections.append({"mbq": "", "time": "", "what": ""})
+        a.corrections[n][f] = _typed(a.corrections[n][f], text, day) if f == "time" else text
+        while a.corrections and not any(a.corrections[-1].values()):
+            a.corrections.pop()
     elif key[0] == "bnote":
         while len(a.bio_notes) <= key[1]:
             a.bio_notes.append("")
@@ -1227,7 +1301,7 @@ class AnimalCard(QFrame):
         row(("syringe full", "syringe full", w_full))
         w_empty, self.e_empty, self.e_empty_t = pair("empty_mbq", "empty_time")
         row(("syringe empty", "syringe empty", w_empty))
-        for i, lo in enumerate(a.losses):
+        for i, lo in enumerate(a.corrections):
             w = QWidget()
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0)
@@ -1244,7 +1318,7 @@ class AnimalCard(QFrame):
             lab = QLabel(lo.get("what") or "correction")
             lab.setStyleSheet("color:#a0a0a0;")
             f = _Field(w, "Remove this correction (Ctrl+Z brings it back)",
-                       lambda i=i: (self.a.losses.pop(i), self.changed.emit(),
+                       lambda i=i: (self.a.corrections.pop(i), self.changed.emit(),
                                     self.rebuild.emit()))
             g.addWidget(lab, r, 0)
             g.addWidget(f, r, 1)
@@ -1388,7 +1462,7 @@ class AnimalCard(QFrame):
             return
         hl = half_life_s(a.isotope) or HALF_LIFE_S["99mTc"]
         mbq = decay(a.full_mbq, tf, ti, hl) - decay(a.empty_mbq, te, ti, hl)
-        for lo in a.losses:
+        for lo in a.corrections:
             if (x := _f(lo.get("mbq"))) is not None and (tl := parse_time(lo.get("time"), day)):
                 mbq -= decay(x, tl, ti, hl)
         tt = parse_time(a.tail_time, day)
@@ -1435,7 +1509,7 @@ class AnimalCard(QFrame):
         self.layout().invalidate()          # the row of cards is sized off this card's hint
 
     def _set_loss(self, i, f, text, ed=None):
-        lo = self.a.losses[i]
+        lo = self.a.corrections[i]
         v = _typed(lo.get(f, ""), text, self.day) if f == "time" else text.strip()
         if ed:
             ed.setText(_shown(v, self.day))
@@ -3001,7 +3075,7 @@ class AnimalWindow(QMainWindow):
             x.setStyleSheet("QToolButton{border:none;color:#8d8d8d;}")
             x.clicked.connect(lambda: (fn(), self._redraw()))
             return x
-        for i, lo in enumerate(a.losses):
+        for i, lo in enumerate(a.corrections):
             box = QWidget()
             h = QHBoxLayout(box)
             h.setContentsMargins(0, 0, 0, 0)
@@ -3018,7 +3092,7 @@ class AnimalWindow(QMainWindow):
                            "in, read by hand — taken off it, like the empty syringe")
             g.addWidget(lab, r, 0)
             g.addWidget(box, r, 1)
-            g.addWidget(x_button(lambda i=i: a.losses.pop(i), "Remove this correction"), r, 2)
+            g.addWidget(x_button(lambda i=i: a.corrections.pop(i), "Remove this correction"), r, 2)
             r += 1
         for i, text in enumerate(a.bio_notes):
             e = _edit(text, "a note on this animal's biodistribution")
@@ -3036,7 +3110,7 @@ class AnimalWindow(QMainWindow):
         add.setStyleSheet(f"QToolButton{{border:none;color:{_ACCENT};}} QToolButton::menu-indicator{{image:none;}}")
         m = QMenu(add)
         m.setToolTipsVisible(True)
-        m.addAction("correction (MBq, at)", lambda: (a.losses.append(
+        m.addAction("correction (MBq, at)", lambda: (a.corrections.append(
             {"mbq": "", "time": "", "what": ""}), self._redraw())).setToolTip(
             "Activity that did not go in, read by hand (a cotton held on the tail…): on the "
             "card under the empty syringe, taken off the injected activity")
@@ -3057,7 +3131,8 @@ class AnimalWindow(QMainWindow):
                 ("Procedures", "The study day's — reported under ARRIVE item 9, one line per "
                                "procedure", False)):
             r = self._events_part(g, r, title, tip,
-                                  lambda k, model=model: is_model(k, procs) == model)
+                                  lambda k, model=model: is_model(k, PREFS["model_kinds"])
+                                  == model)
         return r
 
     def _events_part(self, g, r, title, tip, mine) -> int:
@@ -3329,7 +3404,7 @@ class AnimalWindow(QMainWindow):
                 else:
                     out.append((self.LABEL.get(k, k), k, None, color))
             if name == self.GROUPS[0][0]:          # as many as the animal with the most
-                for n in range(max(len(a.losses) for a in st.animals)):
+                for n in range(max(len(a.corrections) for a in st.animals)):
                     out += [(f"correction {n + 1} {lab}", ("loss", n, f), None, color)
                             for f, lab in (("mbq", "(MBq)"), ("time", "at"), ("what", "what"))]
                 out += [(f"note {n + 1}", ("bnote", n), None, color)
@@ -3593,7 +3668,9 @@ class OptionsWindow(QMainWindow):
         foot = QHBoxLayout()
         for text, tip, fn in (
                 ("Export…", "Write every option to a JSON file", self._export),
-                ("Import…", "Read the options from a JSON file", self._import),
+                ("Import…", "Read the options from a JSON file — BioDist's, or InjAct's "
+                            "settings (their isotopes, strains, procedures, animal fields)",
+                 self._import),
                 ("Reset to defaults", "Every option back to how BioDist ships", self._reset)):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -3639,6 +3716,7 @@ class OptionsWindow(QMainWindow):
         for name, page in (("Animal cards", self._cards()), ("Formats", self._formats()),
                            ("Isotopes", self._isotopes()),
                            ("Species and strains", self._strains()),
+                           ("Animal fields", self._animal_fields()),
                            ("Procedures", self._proc_fields()),
                            ("Tissue table", self._tissue_page()),
                            ("Data sources", self._sources()),
@@ -3729,7 +3807,7 @@ class OptionsWindow(QMainWindow):
                              "the instrument gave; .577 always shows 0.577"), QLabel(""))
         v.addLayout(f)
         g = QLabel("Where: <b>times</b> — the animal cards and window (syringes, injection, "
-                   "tail, losses, procedures), the every-animal table, the tissue table's "
+                   "tail, corrections, procedures), the every-animal table, the tissue table's "
                    "“read at”. <b>Dates</b> — date of birth and arrival (cards, animal window, "
                    "table). <b>Numbers</b> — MBq and body weight on the cards and in the animal "
                    "window, masses and activities typed in the tissue table.<br>Not: the "
@@ -3804,12 +3882,13 @@ class OptionsWindow(QMainWindow):
                     "Genotype left empty: nothing is filled in")
         return w
 
-    def _field_table(self, v, cols, save):
+    def _field_table(self, v, cols, save, hide=()):
         """A table of fields: name, type, list, example (and for a procedure: the line it
-        shares, when it shows). + adds a row, − removes the selected, ↑ ↓ move one. Saved
-        as edited. Returns (table, fill)."""
+        shares, when it shows), pre-filled, asked at the bench. + adds a row, − removes the
+        selected, ↑ ↓ move one; a core field (the apps rely on it) keeps its name and is not
+        removed. Saved as edited. `hide`: columns left out. Returns (table, fill)."""
         heads = ["field", "type", "list (commas)", "example (grey while empty)", "line",
-                 "shown when", "pre-filled"][:cols]
+                 "shown when", "pre-filled", "bench"][:cols]
         t = QTableWidget(0, len(heads))
         t.setHorizontalHeaderLabels(heads)
         t.verticalHeader().setVisible(False)
@@ -3830,18 +3909,33 @@ class OptionsWindow(QMainWindow):
                 "changes (a value still as filled in follows): a value, or one per case, "
                 "semicolons between — 4-5 % if agent = isoflurane; 99mTc (140 keV ± 20 %) if "
                 "isotope = 99mTc (the procedure's fields, else the animal's); the one without "
-                "“if”: any other case"]
+                "“if”: any other case",
+                "Asked at the bench (the phone app): unticked, the phone does not show it, and "
+                "still fills in its pre-filled value"]
         for c in range(len(heads)):
             t.horizontalHeaderItem(c).setToolTip(tips[c])
+        for c in hide:
+            t.setColumnHidden(c, True)
         keys = list(FIELD_TYPES)
+        core: set[str] = set()                   # the core fields' names, as filled
 
         def fill(fields):
             t.blockSignals(True)
             t.setRowCount(len(fields))
+            core.clear()
+            core.update(f["name"] for f in fields if f.get("core"))
             for r, f in enumerate(fields):
                 for c, x in enumerate([f["name"], "", ", ".join(f["items"]), f["example"],
-                                       f["line"], f["when"], defaults_text(f)][:cols]):
+                                       f["line"], f["when"], defaults_text(f), ""][:cols]):
                     t.setItem(r, c, QTableWidgetItem(x))
+                if f.get("core"):
+                    t.item(r, 0).setFlags(t.item(r, 0).flags() & ~Qt.ItemIsEditable)
+                    t.item(r, 0).setToolTip("A core field: the apps rely on it — its name stays, "
+                                            "it is not removed")
+                if cols > 7:
+                    it = t.item(r, 7)
+                    it.setFlags((it.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+                    it.setCheckState(Qt.Checked if f.get("bench", True) else Qt.Unchecked)
                 cb = _combo(list(FIELD_TYPES.values()), FIELD_TYPES[f["type"]])
                 cb.activated.connect(lambda *_: read())
                 t.setCellWidget(r, 1, cb)
@@ -3853,7 +3947,10 @@ class OptionsWindow(QMainWindow):
             return [fdef(cell(r, 0), keys[t.cellWidget(r, 1).currentIndex()],
                          [x.strip() for x in re.split(r",(?![^()]*\))", cell(r, 2))   # not
                           if x.strip()], cell(r, 3),               # in brackets: (mouse, HS)
-                         cell(r, 4), cell(r, 5), *read_defaults(cell(r, 6)))
+                         cell(r, 4), cell(r, 5), *read_defaults(cell(r, 6)),
+                         bench=cols <= 7 or t.item(r, 7) is None
+                         or t.item(r, 7).checkState() == Qt.Checked,
+                         core=cell(r, 0) in core)
                     for r in range(t.rowCount()) if cell(r, 0)]
 
         def read(*_):
@@ -3868,6 +3965,10 @@ class OptionsWindow(QMainWindow):
             t.insertRow(r)
             for c in range(cols):
                 t.setItem(r, c, QTableWidgetItem(""))
+            if cols > 7:
+                t.item(r, 7).setFlags((t.item(r, 7).flags() | Qt.ItemIsUserCheckable)
+                                      & ~Qt.ItemIsEditable)
+                t.item(r, 7).setCheckState(Qt.Checked)
             cb = _combo(list(FIELD_TYPES.values()), FIELD_TYPES["text"])
             cb.activated.connect(lambda *_: read())
             t.setCellWidget(r, 1, cb)
@@ -3884,9 +3985,10 @@ class OptionsWindow(QMainWindow):
                 fill(fs)
                 t.setCurrentCell(r + d, 0)
         for text, tip, fn in (("+", "A field", add),
-                              ("−", "Remove the selected fields", lambda: (
+                              ("−", "Remove the selected fields (not a core one)", lambda: (
                                   [t.removeRow(r) for r in sorted(
-                                      {i.row() for i in t.selectedIndexes()}, reverse=True)],
+                                      {i.row() for i in t.selectedIndexes()}, reverse=True)
+                                   if not (t.item(r, 0) and t.item(r, 0).text() in core)],
                                   read())),
                               ("↑", "Move it up", lambda: move(-1)),
                               ("↓", "Move it down", lambda: move(1))):
@@ -3972,6 +4074,19 @@ class OptionsWindow(QMainWindow):
         v.addStretch(1)
         return w
 
+    def _animal_fields(self):
+        w, v = self._page("Animal fields", "The animal's information, as the animal window and "
+                          "InjAct (the bench app) offer it: how each is typed, its list, its example, "
+                          "what it is pre-filled with — on a new animal, and by case (health "
+                          "status: SPF if supplier = Janvier; the animal's other fields), "
+                          "following a change — and whether InjAct asks for it. A core "
+                          "field (species, strain, the dates, route, euthanasia…) is relied on: "
+                          "its name stays and it is not removed. Strains: Species and strains.")
+        table, fill = self._field_table(v, 8, lambda fs: self._set("animal_fields", fs),
+                                        hide=(4, 5))
+        fill(PREFS["animal_fields"])
+        return w
+
     def _proc_fields(self):
         w, v = self._page("Procedures", "The kinds “+ procedure” offers (left: double-click to "
                           "rename, drag to reorder) and the fields each opens with (right) — "
@@ -4003,26 +4118,46 @@ class OptionsWindow(QMainWindow):
             return [kinds.item(i).text().strip() for i in range(kinds.count())]
 
         def save_kinds(*_):
-            """A kind renamed or moved: its fields go with it."""
+            """A kind renamed or moved: its fields go with it, and its model tick."""
             now, procs = listed(), PREFS["procedures"]
             same = len(now) == len(names)
-            new = {}
+            new, models = {}, []
             for i, n in enumerate(now):
                 if n and n not in new:
-                    new[n] = procs.get(names[i] if same and names[i] not in now else n, [])
+                    was = names[i] if same and names[i] not in now else n
+                    new[n] = procs.get(was, [])
+                    if was in PREFS["model_kinds"]:
+                        models.append(n)
             names[:] = now
             self._set("procedures", new)
+            self._set("model_kinds", models)
 
         def save_fields(fs):
             i = kinds.currentRow()
             if 0 <= i < len(names):
                 self._set("procedures", {**PREFS["procedures"], names[i]: fs})
 
-        table, fill = self._field_table(right, 7, save_fields)
+        table, fill = self._field_table(right, 8, save_fields)
+        model = QCheckBox("the animal's model (days or weeks before: + model)")
+        model.setToolTip("Ticked: this kind is part of the animal's model — diet, treatment, "
+                         "tumour, surgery —, offered by + model; unticked: a procedure of the "
+                         "study day, offered by + procedure")
+
+        def set_model(on):
+            i = kinds.currentRow()
+            if 0 <= i < len(names):
+                ks = [k for k in PREFS["model_kinds"] if k != names[i]] + ([names[i]] if on else [])
+                self._set("model_kinds", [k for k in PREFS["procedures"] if k in ks])
+        model.toggled.connect(set_model)
+        left.addWidget(model)
 
         def show(i):
             fill(PREFS["procedures"].get(names[i], []) if 0 <= i < len(names) else [])
             table.setEnabled(0 <= i < len(names))
+            model.blockSignals(True)
+            model.setChecked(0 <= i < len(names) and names[i] in PREFS["model_kinds"])
+            model.setEnabled(0 <= i < len(names))
+            model.blockSignals(False)
 
         def load():
             kinds.blockSignals(True)
@@ -6038,6 +6173,7 @@ class MainWindow(QMainWindow):
             isotope=prev.isotope, molecule=prev.molecule,
             extra={k: v for k, v in prev.extra.items() if k.lower() not in self.OWN},
             show=dict(prev.show)))
+        _fill_animal(self.study.animals[-1])          # what is still empty: pre-filled
         self.log(f"animal {self.study.animals[-1].id} added")
         self._sync()
 
@@ -7446,7 +7582,7 @@ class MainWindow(QMainWindow):
         """The study as undo and the * see it: without the files' data it keeps."""
         kept, self.study.embedded = self.study.embedded, {}
         try:
-            return self.study.to_json()
+            return self.study.to_json(stamp=False)   # no written_at: a second is no edit
         finally:
             self.study.embedded = kept
 
@@ -7566,6 +7702,9 @@ class MainWindow(QMainWindow):
         self.study.keep_half_lives()             # it reproduces whatever Options say later
         self.study.embedded = {s.path: hidex.pack(self.runs[s.path]) for s in self.study.sources
                                if s.path in self.runs} if PREFS["embed"] else {}
+        for s in self.study.sources:             # what each file says of itself, always kept
+            if s.path in self.runs:
+                s.meta = hidex.meta(self.runs[s.path])
         try:
             self.study.save(self._path)
         except OSError as e:

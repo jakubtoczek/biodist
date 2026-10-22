@@ -34,7 +34,10 @@ import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import hidex
+from . import __version__, hidex, jsonfile
+
+# the study file (C:\Code\LRB_suite\FORMATS.md): format 1 had "biodist": 1 and no header
+FORMAT, FORMAT_VERSION = "biodist-study", 2
 
 # Isotope -> half-life in hours. Display name first; lookup is punctuation-insensitive.
 # Options edits the list: an isotope added there gets its half-life.
@@ -160,9 +163,9 @@ FIELD_TIP = {
 }
 
 # the other things done to an animal — ARRIVE item 9: one block each, a kind and the fields
-# that kind asks for (Options edits them; "+ field" adds one to a single procedure). A kind
-# with a day among its fields (a date: diet, treatment, tumour, surgery) is the animal's
-# model, done days before; the others are the study day's procedures (`is_model`).
+# that kind asks for (Options edits them; "+ field" adds one to a single procedure). The
+# kinds of MODEL_KINDS are the animal's model, done days or weeks before (Options ticks
+# them); the others the study day's procedures.
 INJECTIONS = "pre/co/post-injection"
 EVENT_FIELDS = {INJECTIONS: ["injection", "what", "when", "dose / amount", "volume", "route"],
                 "imaging": ["modality", "start", "duration"],
@@ -173,6 +176,7 @@ EVENT_FIELDS = {INJECTIONS: ["injection", "what", "when", "dose / amount", "volu
                 "tumour": ["cells", "cell number", "site", "Matrigel", "date"],
                 "surgery": ["what", "date", "anaesthesia", "analgesia", "recovery"]}
 OLD_KINDS = {"pre/co-injection": INJECTIONS}      # the bench app's name until 2026.10.21
+MODEL_KINDS = ["diet", "treatment", "tumour", "surgery"]
 NEEDS_ANAESTHESIA = ("imaging",)   # adding one adds an anaesthesia procedure; a surgery, days
 #                                    before, has its own anaesthesia field (since 2026.10.21)
 MODALITIES = ["SPECT", "PET", "CT", "MRI"]
@@ -215,13 +219,17 @@ FIELD_TYPES = {"text": "text", "list": "list", "time": "time · p.i.", "date": "
 
 
 def fdef(name, type="text", items=(), example="", line="", when="", default="",
-         defaults=()) -> dict:
-    """`default`: pre-filled when the procedure is added; `defaults`: (when, value) pairs —
-    pre-filled when that holds ("agent = isoflurane", "isotope = 99mTc": the procedure's
-    fields, else the animal's), the first that does, before `default`."""
+         defaults=(), bench=True, core=False) -> dict:
+    """A field as the suite describes it (C:\\Code\\LRB_suite\\FORMATS.md › fdef).
+    `default`: pre-filled when the procedure (the animal) is added; `defaults`: (when, value)
+    pairs — pre-filled when that holds ("agent = isoflurane", "isotope = 99mTc": the
+    procedure's fields, else the animal's), the first that does, before `default`. `bench`:
+    asked at the bench (false: the phone does not show it, still pre-fills it); `core`: the
+    apps rely on it — not removed, not renamed."""
     return {"name": name, "type": type, "items": list(items), "example": example,
             "line": line, "when": when, "default": default,
-            "defaults": [{"when": w, "value": v} for w, v in defaults]}
+            "defaults": [{"when": w, "value": v} for w, v in defaults],
+            "bench": bench, "core": core}
 
 
 def clean_fdef(d) -> dict | None:
@@ -238,6 +246,7 @@ def clean_fdef(d) -> dict | None:
                        for x in d.get("defaults", []) if isinstance(x, dict)
                        and str(x.get("value", "")).strip()] \
         if isinstance(d.get("defaults"), list) else []
+    out.update({k: d[k] for k in ("bench", "core") if isinstance(d.get(k), bool)})
     return out
 
 
@@ -291,9 +300,10 @@ def prefill(ev: dict, fields: list[dict], around: dict, old: dict | None = None)
         changed = True
 
 
-def is_model(kind: str, procs: dict) -> bool:
-    """The animal's model (days before: a day among its fields), not the study day's."""
-    return any(f["type"] == "date" for f in procs.get(kind, []))
+def is_model(kind: str, models) -> bool:
+    """The animal's model (days or weeks before: `models`, Options' ticks), not the study
+    day's."""
+    return kind in models
 
 
 _ROUTES = ["i.v. tail vein", "i.p.", "s.c.", "oral gavage"]
@@ -342,9 +352,9 @@ def typed_procedures(names: dict[str, list[str]], lists: dict | None = None) -> 
 SPECT_FIELDS = [fdef("system", "list", ["Mediso SPECT/CT", "Mediso PET/MRI"], line="hardware",
                      when="modality = SPECT, PET",
                      defaults=[("modality = SPECT", "Mediso SPECT/CT"),
-                               ("modality = PET", "Mediso PET/MRI")]),
+                               ("modality = PET", "Mediso PET/MRI")], bench=False),
                 fdef("collimator", "list", ["APT62 (mouse, HS)", "APT63 (rat, HS)"],
-                     line="hardware", when="modality = SPECT"),
+                     line="hardware", when="modality = SPECT", bench=False),
                 fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)"], line="acquisition",
                      when="modality = SPECT",
                      defaults=[("isotope = 99mTc", "99mTc (140 keV ± 20 %)")]),
@@ -605,9 +615,35 @@ def when_views(text: str, dob: _dt.date | None, on: _dt.date) -> dict:
     return {"date": day, "age": (day - dob).days / 7 if dob else None, "day": (day - on).days}
 
 
+def _aware(t: _dt.datetime) -> _dt.datetime:
+    # ponytail: a clock time without its zone is this PC's — the lab's; a study opened in
+    # another zone would need the study's own (FORMATS.md › Time)
+    return t if t.tzinfo else t.astimezone()
+
+
+def elapsed_s(t_from: _dt.datetime, t_to: _dt.datetime) -> float:
+    """Seconds from one clock time to another, a clock change between them counted (22:00 to
+    04:00 across the October change: 7 h)."""
+    try:
+        return (_aware(t_to) - _aware(t_from)).total_seconds()
+    except (OSError, OverflowError, ValueError):        # a year the platform has no zone for
+        return (t_to - t_from).total_seconds()
+
+
+def clock_change_hour(t: _dt.datetime | None) -> bool:
+    """A clock time in the hour a clock change repeats (October) or skips (March): which hour
+    it was cannot be told from the clock alone; it is read as the summer one."""
+    if t is None or t.tzinfo:
+        return False
+    try:
+        return t.replace(fold=0).astimezone().utcoffset() != t.replace(fold=1).astimezone().utcoffset()
+    except (OSError, OverflowError, ValueError):
+        return False
+
+
 def decay(a: float, t_from: _dt.datetime, t_to: _dt.datetime, hl_s: float) -> float:
     """Activity at t_to given activity `a` at t_from."""
-    return a * math.exp(-math.log(2) * (t_to - t_from).total_seconds() / hl_s)
+    return a * math.exp(-math.log(2) * elapsed_s(t_from, t_to) / hl_s)
 
 
 def colon_time(s: str) -> str:
@@ -706,6 +742,33 @@ def time_text(a: "Animal", text: str, day: _dt.date) -> str:
 
 ANIMAL_SPECS = typed_fields()   # how the animal window offers each field (fixed)
 
+# The animal's information, shared with the bench app (Options › Animal fields; FORMATS.md):
+# the same names in both. Core: what a computation, a report or ARRIVE relies on — kept.
+def default_animal_fields() -> list[dict]:
+    hint = {**FIELD_HINT, "DOB": "date of birth", "age at arrival": "6 wk",
+            "batch": "the delivery: its date, the supplier's lot", "protocol": "APAFIS #…"}
+    out = [fdef("species", "list", ["mouse", "rat"], default="mouse", core=True),
+           fdef("strain", "list", example="from Options › Species and strains", core=True),
+           fdef("sex", "list", ["F", "M"], core=True),
+           fdef("DOB", "date", core=True), fdef("age", example="12 wk", core=True),
+           fdef("arrival", "date", core=True),
+           fdef("age at arrival", example=hint["age at arrival"], core=True)]
+    for name, core, bench in (("supplier", True, True), ("batch", False, True),
+                              ("protocol", False, True), ("group", False, False),
+                              ("housing", True, False), ("health status", True, False),
+                              ("injection route", True, True),
+                              ("injection volume", True, True),
+                              ("euthanasia", True, True), ("euthanasia time", True, True)):
+        sp = ANIMAL_SPECS.get(name) or fdef(name, example=hint.get(name, ""))
+        out.append(fdef(name, sp["type"], sp["items"], hint.get(name, sp["example"]) if
+                        sp["type"] != "list" or not sp["items"] else sp["example"],
+                        default="i.v. tail vein" if name == "injection route" else "",
+                        bench=bench, core=core))
+    return out
+
+
+CORE_FIELDS = [f["name"] for f in default_animal_fields() if f["core"]]
+
 
 TIME_FORMATS = {"HH:MM d+n": "08:48 d+1", "HH:MM:SS d+n": "08:48:21 d+1",
                 "DD/MM HH:MM": "25/09 08:48", "YYYY-MM-DD HH:MM": "2026-09-25 08:48"}
@@ -779,14 +842,17 @@ class Animal:
     inj_time: str = ""
     tail_mbq: float | None = None                # injection site read by hand: wins over a
     tail_time: str = ""                          # counted "tail" vial
-    losses: list[dict[str, str]] = field(default_factory=list)   # other activity that did
-    #             not go in, read by hand (a cotton held on the tail…): mbq (as typed), time, what
+    corrections: list[dict[str, str]] = field(default_factory=list)   # other activity that
+    #             did not go in, read by hand (a cotton held on the tail…): mbq (as typed), time,
+    #             what — "losses" until format 1
     bio_notes: list[str] = field(default_factory=list)   # notes on the biodistribution
     note: str = ""
     extra: dict[str, str] = field(default_factory=lambda: {"species": "mouse"})
     typed: dict[str, str] = field(default_factory=dict)   # numbers as read: "1.30", not 1.3
     show: dict[str, bool] = field(default_factory=dict)   # card fields shown / hidden by hand
     events: list[dict[str, str]] = field(default_factory=list)   # kind + its fields -> text
+    other: dict = field(default_factory=dict)   # keys BioDist does not read (the bench app's
+    #                                             as_read, own_tissues…): carried, written back
 
     @property
     def label(self) -> str:
@@ -799,9 +865,11 @@ class Animal:
         d = dict(d)
         old = d.pop("alias", "")
         d.setdefault("aliases", [old] if old else [])
+        if "losses" in d:                                          # format 1
+            d["corrections"] = d.pop("losses") + d.get("corrections", [])
         mbq, t = d.pop("loss_mbq", None), d.pop("loss_time", "")   # 2026.10.5: one loss
         if mbq is not None or t:
-            d.setdefault("losses", []).append(
+            d.setdefault("corrections", []).append(
                 {"mbq": d.get("typed", {}).pop("loss_mbq", "" if mbq is None else f"{mbq:g}"),
                  "time": t, "what": ""})
         d["events"] = split_modality(anaesthesia_apart(d.get("events", [])))
@@ -821,7 +889,7 @@ class Animal:
                 ev[key] = v
             else:                                # both said something: neither is lost
                 ev["note"] = "; ".join(x for x in (ev.get("note", ""), f"{f}: {v}") if x)
-        return Animal(**{k: v for k, v in d.items() if k in Animal.__dataclass_fields__})
+        return Animal(**_known(Animal, d))
 
 
 @dataclass
@@ -831,6 +899,7 @@ class Tissue:
     hand: list[str] = field(default_factory=list)  # "mass" / "activity" / "note": typed rows
     closed: list[str] = field(default_factory=list)  # typed rows closed: kept, not used
     batch: str = ""              # the runs it is counted in: "" = the main ones, else a name
+    other: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -847,6 +916,8 @@ class Source:
     batch: str = ""              # the tissue run it was guessed into
     auto: bool = True            # kind and mapping are guessed until the user sets them
     stamp: dict = field(default_factory=dict)    # the file as it was used: size, times, sha256
+    meta: dict = field(default_factory=dict)     # what the file says of itself (hidex.meta):
+    #                                              kept whether or not its data is embedded
 
     @staticmethod
     def from_dict(d: dict) -> "Source":
@@ -888,6 +959,22 @@ class Manual:
     time: str = ""
     note: str = ""
     typed: dict[str, str] = field(default_factory=dict)   # numbers as read
+    other: dict = field(default_factory=dict)   # the bench app's as_read…: carried
+
+
+def _known(cls, d: dict) -> dict:
+    """`d`'s keys `cls` has; the rest (another app's, a newer version's) in its `other`,
+    written back unchanged."""
+    fields = cls.__dataclass_fields__
+    out = {k: v for k, v in d.items() if k in fields and k != "other"}
+    out["other"] = {**d.get("other", {}), **{k: v for k, v in d.items() if k not in fields}}
+    return out
+
+
+def _spread(d: dict) -> dict:
+    """An object as saved: its `other` keys back beside its own (its own win)."""
+    other = d.pop("other", None) or {}
+    return {**d, **{k: v for k, v in other.items() if k not in d}}
 
 
 @dataclass
@@ -996,13 +1083,30 @@ class Study:
     half_lives: dict[str, float] = field(default_factory=dict)   # isotope -> hours, the
     #                                              study's own (Options' until it is saved)
     embedded: dict[str, dict] = field(default_factory=dict)  # path -> the file's data, packed
+    id: str = ""                                 # given once (FORMATS.md), kept by every save
+    other: dict = field(default_factory=dict)    # keys BioDist does not read (the bench app's
+    #                                              molecules, shared…): carried, written back
     outside_edit = False                         # loaded: changed since saved (not a field)
 
     # ------------------------------------------------------------------ persistence
-    def to_json(self) -> str:
+    def to_json(self, stamp: bool = True, doc=None) -> str:
         """Readable: a short list on one line; the files' data kept compact at the end, and
-        a fingerprint of the whole, to tell an edit made outside BioDist."""
-        d = json.loads(json.dumps({"biodist": 1, **asdict(self)}, default=str))
+        a fingerprint of the whole, to tell an edit made outside BioDist. Saved as `doc`: each
+        file also from its folder (`rel`), so the study's folder can move with its data."""
+        if not self.id:
+            self.id = jsonfile.new_id()
+        d = json.loads(json.dumps(asdict(self), default=str))
+        for x in d["sources"] if doc else ():
+            x["rel"] = jsonfile.rel_path(x["path"], doc) if x["path"] else ""
+        d["animals"] = [_spread(a) for a in d["animals"]]
+        d["tissues"] = [_spread(t) for t in d["tissues"]]
+        d["manual"] = [_spread(m) for m in d["manual"]]
+        d = _spread(d)
+        d.pop("id")
+        h = jsonfile.header(FORMAT, FORMAT_VERSION, f"BioDist {__version__}", self.id)
+        if not stamp:                                # a snapshot (undo): the same study, the
+            h["written_at"] = ""                     # same text, whenever it is taken
+        d = {**h, **d}
         packed = d.pop("embedded")
         text = json.dumps(d, indent=1, ensure_ascii=False)
         text = re.sub(r"\[\s*\n\s*([^\[\]{}]*?)\s*\]",       # [\n "107",\n "Liver"\n] -> one line
@@ -1017,14 +1121,30 @@ class Study:
         return text[:-2] + tail
 
     @staticmethod
-    def from_json(text: str) -> "Study":
-        d = json.loads(text)
+    def from_json(text: str, doc=None) -> "Study":
+        """Opened from `doc`: a file not where it was is looked for from the study's folder
+        (jsonfile.locate); found, the study points to it."""
+        d = json.loads(text.lstrip("\ufeff"))
+        if not isinstance(d, dict):
+            raise jsonfile.FormatError("not a biodist-study file")
+        jsonfile.version_of(d, FORMAT, FORMAT_VERSION,     # format 1: "biodist": 1, or older
+                            lambda d: 1 if "biodist" in d or "animals" in d else None)
         sha = d.pop("saved_sha256", None)
         edited = sha is not None and sha != _fingerprint(d)
         d.pop("biodist", None)
+        for k in jsonfile.HEADER:
+            if k != "id":
+                d.pop(k, None)
         emb = d.get("embedded") or {}
         if "files" in emb and "data" in emb:         # since 2026.10.5.3: a list, then the data
             d["embedded"] = dict(zip(emb["files"], emb["data"]))
+        for x in d.get("sources", []):
+            rel, was = x.pop("rel", ""), x.get("path", "")
+            p = jsonfile.locate(was, rel, doc) if doc and was else None
+            if p and str(p) != was:
+                x["path"] = str(p)
+                if was in d.get("embedded", {}):
+                    d["embedded"][str(p)] = d["embedded"].pop(was)
         if d.get("average") in ("mean", "median"):   # 2026.10.5: one rule for both
             d["mass_rule"] = d["average"]
             if d.get("pick_count", "auto") == "auto":
@@ -1040,23 +1160,25 @@ class Study:
             d.setdefault("combine", "weighted" if d["pick_count"] == "pooled" else "mean")
             d["pick_count"] = "all"                  # combined as `combine` says
         one_top(d)
-        s = Study(**{k: v for k, v in d.items() if k in Study.__dataclass_fields__
-                     and k not in ("animals", "tissues", "sources", "manual")})
+        old = {"average", "dt_warn"}                 # read above, not carried
+        s = Study(**_known(Study, {k: v for k, v in d.items() if k not in old and k not in (
+            "animals", "tissues", "sources", "manual")}))
         s.animals = [Animal.from_dict(a) for a in d.get("animals", [])]
-        s.tissues = [Tissue(**t) for t in d.get("tissues", [])]
+        s.tissues = [Tissue(**_known(Tissue, t)) for t in d.get("tissues", [])]
         for t, n in zip(s.tissues, unique_names([t.name for t in s.tissues])):
             t.name = n                           # files from before 2026.9.30.1 may repeat one
         s.sources = [Source.from_dict(x) for x in d.get("sources", [])]
-        s.manual = [Manual(**m) for m in d.get("manual", [])]
+        s.manual = [Manual(**_known(Manual, m)) for m in d.get("manual", [])]
+        s.id = s.id or jsonfile.new_id()             # format 1 had none: given now, saved next
         s.outside_edit = edited
         return s
 
     def save(self, path):
-        Path(path).write_text(self.to_json(), encoding="utf-8")
+        jsonfile.write_text(path, self.to_json(doc=path))     # whole or not at all
 
     @staticmethod
     def load(path) -> "Study":
-        return Study.from_json(Path(path).read_text(encoding="utf-8"))
+        return Study.from_json(Path(path).read_text(encoding="utf-8"), doc=path)
 
     # ---------------------------------------------------------------------- helpers
     @property
@@ -1372,9 +1494,9 @@ def stamp(path) -> dict:
     """A file as it is now: size, times, SHA-256 — to tell later whether it changed."""
     p = Path(path)
     st = p.stat()
-    return {"size": st.st_size,
-            "modified": _dt.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
-            "created": _dt.datetime.fromtimestamp(st.st_ctime).isoformat(timespec="seconds"),
+    def iso(t):                                  # an instant: with its UTC offset (FORMATS.md)
+        return _dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+    return {"size": st.st_size, "modified": iso(st.st_mtime), "created": iso(st.st_ctime),
             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
 
 
@@ -1789,7 +1911,7 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         idb = decay(a.full_mbq * 1e6, tf, ref, hl)
         if a.empty_mbq is not None and te is not None:
             idb -= decay(a.empty_mbq * 1e6, te, ref, hl)
-        for lo in a.losses:
+        for lo in a.corrections:
             mbq, tl = _float(lo.get("mbq")), parse_time(lo.get("time", ""), study.day)
             if mbq is None:
                 continue
@@ -1890,6 +2012,14 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
         suggest.append({"key": "drift:" + ",".join(n for n, _ in drifted), "drift": drifted})
     refs = {a.id: t for a in study.animals if study.ref_rule == "injection"
             and (t := parse_time(a.inj_time, study.day))}
+    clock = [t for r in runs.values() for t in (r.started, r.normalized_to, *(x.time for x in r.slots))]
+    clock += [parse_time(getattr(a, f), study.day) for a in study.animals
+              for f in ("full_time", "inj_time", "empty_time", "tail_time")]
+    clock += [parse_time(m.time, study.day) for m in study.manual]
+    if odd := sorted({t for t in clock if clock_change_hour(t)}):
+        notes.append("clock change: " + ", ".join(f"{t:%d %b %H:%M}" for t in odd[:6])
+                     + (f" (+{len(odd) - 6})" if len(odd) > 6 else "") + " fall in the hour the "
+                     "clock repeats or skips — read as summer time; check them")
     res = Result(ref=ref, cells=cells, injected_bq=injected, tail_bq=tails, notes=notes,
                   suggest=suggest,
                   refs=refs, hls={a.id: study.hl_for(a.id) for a in study.animals},
@@ -3230,6 +3360,30 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
         ("cells", "text"), ("date", "date"), ("modality", "list"), ("start", "time")], old
     assert event_text({"kind": "imaging", "modality": "SPECT", "start": ""}) \
         == "imaging: modality SPECT"
+    # the file: its header first; what BioDist does not read carried; format 1 read
+    st = Study(name="t", date="2026-10-21", animals=[Animal.from_dict(
+        {"id": "1", "losses": [{"mbq": "0.3", "time": "12:30", "what": "cotton"}],
+         "as_read": {"full": {"value": "1", "unit": "mCi"}}})],
+        tissues=[Tissue(**_known(Tissue, {"name": "Kidney", "hue": 3}))],
+        manual=[Manual(**_known(Manual, {"animal": "1", "tissue": "Kidney", "mbq": 0.2,
+                                         "as_read": {"value": "0.2", "unit": "MBq"}}))])
+    st.other["molecules"] = [{"name": "LRB-1"}]
+    j = json.loads(st.to_json())
+    assert list(j)[:5] == list(jsonfile.HEADER) and j["format"] == FORMAT and j["id"] == st.id
+    assert j["animals"][0]["corrections"][0]["what"] == "cotton" and "losses" not in j["animals"][0]
+    assert j["animals"][0]["as_read"]["full"]["unit"] == "mCi" and j["tissues"][0]["hue"] == 3
+    assert j["manual"][0]["as_read"]["value"] == "0.2" and j["molecules"] == [{"name": "LRB-1"}]
+    assert "other" not in j and "other" not in j["animals"][0]
+    back = Study.from_json(st.to_json())
+    assert (back.id, back.other["molecules"], back.animals[0].other["as_read"]["full"]["value"],
+            back.outside_edit) == (st.id, [{"name": "LRB-1"}], "1", False)
+    assert json.loads(back.to_json())["animals"] == j["animals"]
+    try:
+        Study.from_json(json.dumps({"format": FORMAT, "format_version": FORMAT_VERSION + 1}))
+    except jsonfile.FormatError as e:
+        assert "newer" in str(e)
+    else:
+        raise AssertionError("a newer study read")
     # pre-filled: the agent, then what it brings; a change carries what was still as filled
     an = {"kind": "anaesthesia"}
     prefill(an, procs["anaesthesia"], {})
@@ -3250,7 +3404,12 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert im["system"] == "Mediso PET/MRI", im
     assert read_defaults(defaults_text(procs["imaging"][3])) == (
         "", [("modality = SPECT", "Mediso SPECT/CT"), ("modality = PET", "Mediso PET/MRI")])
-    assert [k for k in procs if is_model(k, procs)] == ["diet", "treatment", "tumour", "surgery"]
+    assert [k for k in procs if is_model(k, MODEL_KINDS)] == ["diet", "treatment", "tumour",
+                                                              "surgery"]
+    af = {f["name"]: f for f in default_animal_fields()}
+    assert af["species"]["core"] and not af["group"]["bench"] and af["supplier"]["items"] == [
+        "Janvier", "Envigo"] and af["injection route"]["default"] == "i.v. tail vein", af
+    assert clean_fdef({**af["housing"], "bench": "no"})["bench"] is True    # a bad type: default
     assert Animal.from_dict({"events": [{"kind": "pre/co-injection"}]}).events[0]["kind"] \
         == INJECTIONS
     assert Source(slotmap={"1:1": ["107", ""]}).mapping(
@@ -3346,6 +3505,39 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     assert Study.from_json(kept.to_json().replace('"name": "260903"', '"name": "x"')).outside_edit
     assert '"tissues": ["ctrl", "Adrenal"' in kept.to_json(), "short lists on one line"
     assert stamp(c1.path)["sha256"] == hashlib.sha256(Path(c1.path).read_bytes()).hexdigest()
+    assert stamp(c1.path)["modified"][-6] in "+-", "an instant carries its offset"
+
+    # a clock change between two times is counted; a time in its hour is said
+    oct25 = _dt.datetime(2026, 10, 24, 22, 0), _dt.datetime(2026, 10, 25, 4, 0)
+    if oct25[0].astimezone().utcoffset() != oct25[1].astimezone().utcoffset():   # a zone with DST
+        assert elapsed_s(*oct25) == 7 * 3600, elapsed_s(*oct25)
+        assert clock_change_hour(_dt.datetime(2026, 10, 25, 2, 30))
+        assert not clock_change_hour(_dt.datetime(2026, 10, 25, 3, 30))
+    assert elapsed_s(_dt.datetime(2026, 9, 3, 9), _dt.datetime(2026, 9, 3, 15)) == 6 * 3600
+
+    # the study's folder moved with its files: they are found from it (FORMATS.md §7)
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        old, new = Path(tmp) / "old", Path(tmp) / "new"
+        (old / "RAW").mkdir(parents=True)
+        moved = Study.from_json(s.to_json())
+        moved.embedded = {}
+        for x in moved.sources:
+            shutil.copy(x.path, old / "RAW")
+            x.path = str(old / "RAW" / Path(x.path).name)
+        moved.embedded[moved.sources[0].path] = {"kept": 1}
+        moved.save(old / "s.json")
+        assert '"rel": "RAW/' in (old / "s.json").read_text(encoding="utf-8")
+        shutil.move(old, new)
+        back = Study.load(new / "s.json")
+        assert all(Path(x.path).parent == (new / "RAW").resolve() for x in back.sources)
+        assert list(back.embedded) == [back.sources[0].path] and not back.outside_edit
+        cs = back.sources[-1]                        # a counting: its half-life, kept
+        cs.meta = hidex.meta(hidex.read(cs.path))
+        assert Study.from_json(back.to_json()).sources[-1].meta == cs.meta
+        assert cs.meta["half_life_h"] and cs.meta["started"][-6] in "+-", cs.meta
+        assert abs(compute(back).value(back, "107", "Liver", "pid_g") - pidg("Liver")) < 1e-9
 
     # studies saved with a single alias still open; new IDs follow the last one
     assert Animal.from_dict({"id": "107", "alias": "C1"}).label == "107 (C1)"
@@ -3369,10 +3561,10 @@ def _self_check(data_dir=r"C:\Code\BioDist\data_260903"):
     # another loss of the dose (a cotton on the tail) comes off the injected activity
     lo = Study(date="2026-09-03", animals=[Animal.from_dict(
         {"id": "1", "full_mbq": 10, "full_time": "10:00", "loss_mbq": 0.5, "loss_time": "10:00"})])
-    lo.animals[0].losses.append({"mbq": "0,5", "time": "10:00", "what": "cotton"})
+    lo.animals[0].corrections.append({"mbq": "0,5", "time": "10:00", "what": "cotton"})
     got = compute(lo, {})
     assert abs(got.injected_bq["1"] - decay(9e6, _dt.datetime(2026, 9, 3, 10), got.ref,
-                                            HALF_LIFE_S["99mTc"])) < 1, "two losses off"
+                                            HALF_LIFE_S["99mTc"])) < 1, "two corrections off"
     # an imaging session's anaesthesia, a field until 2026.10.5.1, is a procedure of its own
     old = Animal.from_dict({"id": "1", "events": [
         {"kind": "imaging", "modality": "SPECT/CT", "start": "13:10", "anaesthesia": "iso"}]})

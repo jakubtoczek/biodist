@@ -111,6 +111,18 @@ def pack(run: Run) -> dict:
                   for x in run.slots]}
 
 
+def meta(run: Run) -> dict:
+    """What a run says of itself that the results depend on — the counter, its protocol, when
+    it started and the time its Bq are decay-corrected to, its half-lives and efficiencies:
+    the study keeps it with the file's reference, embedded or not (FORMATS.md › data files)."""
+    def iso(t):
+        return t.astimezone().isoformat(timespec="seconds") if t else None
+    return {"instrument": run.counter, "protocol": run.template, "started": iso(run.started),
+            "normalized_to": iso(run.normalized_to),
+            "half_life_h": {w: round(s / 3600, 9) for w, s in run.half_life_s.items()},
+            "efficiency": dict(run.efficiency)}
+
+
 def unpack(path, d: dict) -> Run:
     def when(s):
         return _dt.datetime.fromisoformat(s) if s else None

@@ -319,7 +319,7 @@ def _animals(study: Study, res: Result, parts) -> list:
         rows = [[a.id, a.isotope, a.molecule, a.extra.get("injection route", ""),
                  a.extra.get("injection volume", ""), a.full_mbq, a.full_time, a.empty_mbq,
                  a.empty_time, "; ".join(f"{lo.get('mbq')} at {lo.get('time')}" + (
-                     f" ({lo['what']})" if lo.get("what") else "") for lo in a.losses),
+                     f" ({lo['what']})" if lo.get("what") else "") for lo in a.corrections),
                  a.inj_time, a.tail_mbq, a.tail_time,
                  _mbq(at_injection(study, res, a.id, res.injected_bq.get(a.id))),
                  "; ".join(f"{m} {t:%H:%M}: {bq / 1e6:.3g}"
