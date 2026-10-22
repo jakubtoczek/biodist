@@ -573,7 +573,7 @@ assert (saved["format"], saved["format_version"]) == ("biodist-options", 2), lis
 assert saved["in_vivo"]["procedures"][0]["kind"] == "pre/co/post-injection" and \
     [p["kind"] for p in saved["in_vivo"]["procedures"] if p["model"]] == PREFS["model_kinds"]
 assert "card_rows" in saved["biodist"] and "strains" not in saved["biodist"]
-assert saved["nuclides"]["isotopes"][0] == ["99mTc", 6.00718] and "isotopes" not in saved["in_vivo"]
+assert saved["nuclides"]["isotopes"][0] == ["99mTc", 6.0067] and "isotopes" not in saved["in_vivo"]
 PREFS["card_rows"], PREFS["strains"] = 99, "junk"
 _load_prefs(tmp)
 assert PREFS == keep, "options round trip"
@@ -595,9 +595,12 @@ tmp.write_text(json.dumps({"isotopes": [["99mTc", 6.00718], ["47Sc", 80.4]], "st
                            "subtract_tail": False, "injact": {"units": ["MBq"]}}), encoding="utf-8")
 PREFS["card_rows"] = 7
 _app._read_prefs(tmp)
-assert PREFS["card_rows"] == 7 and PREFS["isotopes"] == [["99mTc", 6.00718], ["47Sc", 80.4]], PREFS["isotopes"]
+assert PREFS["card_rows"] == 7 and PREFS["isotopes"] == [["99mTc", 6.0067], ["47Sc", 80.4]], PREFS["isotopes"]  # old default: DDEP
 assert list(PREFS["procedures"]) == ["imaging"] and PREFS["subtract_tail"] is False and "injact" not in PREFS
 assert ["mouse", "BALB/c", "wild type (inbred)"] in PREFS["strains"]       # its genotype, as shipped
+# an options file holding the half-lives shipped before DDEP takes DDEP's; one typed stays
+_load_prefs(got={"isotopes": [["99mTc", 6.00718], ["64Cu", 12.9], ["177Lu", 159.528]]})
+assert PREFS["isotopes"] == [["99mTc", 6.0067], ["64Cu", 12.9], ["177Lu", 159.4632]], PREFS["isotopes"]
 _load_prefs(got=json.loads(json.dumps(keep)))
 assert PREFS == keep
 tmp.unlink()

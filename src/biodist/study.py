@@ -41,11 +41,15 @@ FORMAT, FORMAT_VERSION = "biodist-study", 2
 
 # Isotope -> half-life in hours. Display name first; lookup is punctuation-insensitive.
 # Options edits the list: an isotope added there gets its half-life.
-ISOTOPES = [
-    ("99mTc", 6.00718), ("68Ga", 1.12782), ("18F", 1.8288), ("111In", 67.313),
-    ("177Lu", 159.528), ("123I", 13.2234), ("125I", 1425.6), ("64Cu", 12.7004),
-    ("201Tl", 73.01), ("90Y", 64.053), ("161Tb", 166.9),
+ISOTOPES = [   # DDEP, the suite's table (C:\Code\LRB_suite\nuclides.json; 2026.10.22.2)
+    ("99mTc", 6.0067), ("68Ga", 1.1305), ("18F", 1.8288), ("111In", 67.3176),
+    ("177Lu", 159.4632), ("123I", 13.2234), ("125I", 1425.312), ("64Cu", 12.7003),
+    ("201Tl", 73.0104), ("90Y", 64.0416), ("161Tb", 166.872),
 ]
+# what was shipped before: an options file still holding one of these takes the new value
+OLD_ISOTOPES = {"99mTc": 6.00718, "68Ga": 1.12782, "111In": 67.313, "177Lu": 159.528,
+                "125I": 1425.6, "64Cu": 12.7004, "201Tl": 73.01, "90Y": 64.053, "161Tb": 166.9}
+HL_DIFFER = 5e-4        # a file's half-life differing by more than this (0.05 %) is said (user)
 HALF_LIFE_S = {k: v * 3600.0 for k, v in ISOTOPES}
 
 ANIMAL_MAJOR, TISSUE_MAJOR = "animal_major", "tissue_major"
@@ -170,13 +174,13 @@ INJECTIONS = "pre/co/post-injection"
 EVENT_FIELDS = {INJECTIONS: ["injection", "what", "when", "dose / amount", "volume", "route"],
                 "imaging": ["modality", "start", "duration"],
                 "anaesthesia": ["agent", "induction", "maintenance", "when"],
-                "diet": ["what", "start date"],
-                "treatment": ["what", "dose / amount", "route", "schedule", "start date",
-                              "end date"],
                 "tumour": ["cells", "cell number", "site", "Matrigel", "date"],
-                "surgery": ["what", "date", "anaesthesia", "analgesia", "recovery"]}
+                "diet": ["what", "start date"],
+                "surgery": ["what", "date", "anaesthesia", "analgesia", "recovery"],
+                "treatment": ["what", "dose / amount", "route", "schedule", "start date",
+                              "end date"]}       # the kinds in the user's order (2026-10-22)
 OLD_KINDS = {"pre/co-injection": INJECTIONS}      # the bench app's name until 2026.10.21
-MODEL_KINDS = ["diet", "treatment", "tumour", "surgery"]
+MODEL_KINDS = ["tumour", "diet", "surgery", "treatment"]
 NEEDS_ANAESTHESIA = ("imaging",)   # adding one adds an anaesthesia procedure; a surgery, days
 #                                    before, has its own anaesthesia field (since 2026.10.21)
 MODALITIES = ["SPECT", "PET", "CT", "MRI"]
@@ -355,9 +359,10 @@ SPECT_FIELDS = [fdef("system", "list", ["Mediso SPECT/CT", "Mediso PET/MRI"], li
                                ("modality = PET", "Mediso PET/MRI")], bench=False),
                 fdef("collimator", "list", ["APT62 (mouse, HS)", "APT63 (rat, HS)"],
                      line="hardware", when="modality = SPECT", bench=False),
-                fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)"], line="acquisition",
-                     when="modality = SPECT",
-                     defaults=[("isotope = 99mTc", "99mTc (140 keV ± 20 %)")]),
+                fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)", "177Lu", "111In"],
+                     line="acquisition", when="modality = SPECT",
+                     defaults=[("isotope = 99mTc", "99mTc (140 keV ± 20 %)"),
+                               ("isotope = 177Lu", "177Lu"), ("isotope = 111In", "111In")]),
                 fdef("time per frame", example="50 s/frame", line="acquisition",
                      when="modality = SPECT"),
                 fdef("ring difference", "list", ["1:5", "1:3"], line="acquisition",
@@ -424,7 +429,9 @@ def dated(kind: str, f: str) -> bool:
 # the lab's, four or five at most (user, 2026.10.21) — any other can be typed
 WT, OUT = "wild type (inbred)", "wild type (outbred)"
 STRAINS = [("mouse", "Athymic nude", "Foxn1 nu/nu"), ("mouse", "C57BL/6J", WT),
-           ("mouse", "BALB/c", WT), ("rat", "Wistar", OUT)]
+           ("mouse", "BALB/c", WT), ("rat", "Sprague-Dawley", OUT), ("rat", "Wistar", OUT),
+           ("rat", "Long-Evans", OUT), ("rat", "Fischer 344", WT), ("rat", "Lewis", WT)]
+#          the rats: the user's, 2026-10-22
 
 
 def arrive_gaps(a: "Animal") -> list[str]:
@@ -1656,7 +1663,7 @@ def compute(study: Study, runs: dict[str, hidex.Run] | None = None) -> Result:
             no_eff.setdefault(f"{run.counter}|{w}", []).append(Path(s.path).name)
         norm = run.normalized_to if own else None    # the counter's Bq at its reference
         iso = w.split("_")[0]
-        if (fh := run.half_life_s.get(w)) and (sh := study.hl_of(iso)) and abs(fh / sh - 1) > 1e-5:
+        if (fh := run.half_life_s.get(w)) and (sh := study.hl_of(iso)) and abs(fh / sh - 1) > HL_DIFFER:
             hl_off.setdefault(_canon(iso), (iso, round(fh / 3600, 9), round(sh / 3600, 9)))
         mapping, whole = s.mapping(run), widest(run)
         for slot in run.slots:
@@ -3212,9 +3219,11 @@ def _self_check(data_dir=r"C:\Code\BioDist\data\data_260903"):
             if "half_life" in sg] == [("Tc-99m", 6.00718)]
     s.half_lives = {}
     s.keep_half_lives()
-    assert s.half_lives == {"99mTc": 6.00718} and not any(
+    assert s.half_lives == {"99mTc": 6.0067} and not any(
         "half_life" in sg for sg in res.suggest), s.half_lives
     s.half_lives = {}
+    # the counter's own 6.00718 h is DDEP's 6.0067 h within 0.05 %: not offered (user, 2026-10-22)
+    assert not any("half_life" in sg for sg in compute(s).suggest)
 
     # SUV = (Bq/g in tissue) / (Bq/g whole body); with 19.6 g and 143 %IA/g the kidneys sit ~28
     assert abs(res.value(s, "107", "Kidneys", "suv") - pidg("Kidneys") * 19.6 / 100) < 1e-6
@@ -3227,7 +3236,7 @@ def _self_check(data_dir=r"C:\Code\BioDist\data\data_260903"):
     # Bq shown at each animal's injection (12:17 for 107), or at the one study instant
     assert res.ref_of("107") == _dt.datetime(2026, 9, 3, 12, 17)
     assert abs(res.value(s, "107", "Liver", "bq") / res.cell("107", "Liver").bq
-               - 2 ** (223 / 60 / 6.00718)) < 1e-6, "16:00 back to 12:17"
+               - 2 ** (223 / 60 / 6.0067)) < 1e-6, "16:00 back to 12:17"
     s.ref_rule = "time"
     assert compute(s).value(s, "107", "Liver", "bq") == res.cell("107", "Liver").bq
     s.ref_time = "18:00"                         # a time typed: everything there
@@ -3444,8 +3453,8 @@ def _self_check(data_dir=r"C:\Code\BioDist\data\data_260903"):
     assert im["system"] == "Mediso PET/MRI", im
     assert read_defaults(defaults_text(procs["imaging"][3])) == (
         "", [("modality = SPECT", "Mediso SPECT/CT"), ("modality = PET", "Mediso PET/MRI")])
-    assert [k for k in procs if is_model(k, MODEL_KINDS)] == ["diet", "treatment", "tumour",
-                                                              "surgery"]
+    assert [k for k in procs if is_model(k, MODEL_KINDS)] == ["tumour", "diet", "surgery",
+                                                              "treatment"]
     af = {f["name"]: f for f in default_animal_fields()}
     assert af["species"]["core"] and not af["group"]["bench"] and af["supplier"]["items"] == [
         "Janvier", "Envigo"] and af["injection route"]["default"] == "i.v. tail vein", af

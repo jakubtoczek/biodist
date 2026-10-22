@@ -320,6 +320,9 @@ def _load_prefs(path: Path | None = None, got=None):
     # ponytail: files from before 2026.9.28.1 carry a "listed" tick: the unticked ones go
     PREFS["isotopes"] = [r[:2] for r in PREFS["isotopes"]
                          if isinstance(r, list) and (len(r) == 2 or len(r) == 3 and r[2])]
+    new = dict(_study.ISOTOPES)                  # the half-lives shipped before DDEP: the new ones
+    PREFS["isotopes"] = [[r[0], new[r[0]]] if isinstance(r, list) and len(r) == 2 and r[0] in new
+                         and _study.OLD_ISOTOPES.get(r[0]) == r[1] else r for r in PREFS["isotopes"]]
     for k, n in (("isotopes", 2), ("strains", 3)):
         if not all(isinstance(r, list) and len(r) == n for r in PREFS[k]):
             PREFS[k] = copy.deepcopy(_DEFAULTS[k])
