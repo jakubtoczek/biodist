@@ -213,8 +213,8 @@ A card per animal. The fields:
   **on card** too (the card shows it as *imaging · start*). Time fields take a clock time or
   a time after the injection; day fields a date, an age or D-14 — the others are worked out
   in grey.
-- **▦ every animal**: a table, a column per animal; **on card** and **copy ▾** beside it, on
-  the right, row for row. Select several cells and type to fill them all (a comma list is
+- **▦ every animal**: a table, a column per animal; **copy ▾** and **on card** at the end of
+  each line, outside the table, as on one animal's page. Select several cells and type to fill them all (a comma list is
   dealt out); Ctrl+V pastes a row or a block copied from Excel.
 - ◀ ▶ and the list switch animals; Ctrl+Z undoes.
 

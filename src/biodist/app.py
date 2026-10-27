@@ -2931,7 +2931,7 @@ class AnimalWindow(QMainWindow):
         self._drawn = []
         self.stack = QStackedWidget()
         self.stack.addWidget(self.scroll)
-        self.stack.addWidget(self.sheet)
+        self.stack.addWidget(self._table_page())
         self.setCentralWidget(self.stack)
         _undo_keys(self, lambda: self._step(True), lambda: self._step(False))
         self.statusBar()
@@ -3202,6 +3202,7 @@ class AnimalWindow(QMainWindow):
                     rows[-1][1].append(sp)
                 else:
                     rows.append((sp["line"] or sp["name"], [sp]))
+            subs: dict[int, list[QLabel]] = {}   # a line's nth field name, in every line
             for label, group in rows:
                 need = [sp["name"] for sp in group if sp["name"] in EVENT_NEEDED.get(kind, [])
                         and not ev.get(sp["name"])]
@@ -3212,10 +3213,11 @@ class AnimalWindow(QMainWindow):
                 box = QWidget()
                 hl = QHBoxLayout(box)
                 hl.setContentsMargins(0, 0, 0, 0)
-                for sp in group:
+                for i, sp in enumerate(group):
                     if len(group) > 1:
                         n = QLabel(sp["name"])
                         n.setStyleSheet("color:#8d8d8d;")
+                        subs.setdefault(i, []).append(n)
                         hl.addWidget(n)
                     for x in self._field_widgets(a, sp, lambda ev=ev, f=sp["name"]: ev.get(
                             f, ""), lambda v, ev=ev, f=sp["name"]: _put_event(ev, f, v, a),
@@ -3239,6 +3241,10 @@ class AnimalWindow(QMainWindow):
                     self.a, _ev_key(*k[1:]), v) for k in eks])
                 g.addWidget(on, r, 3, Qt.AlignCenter)
                 r += 1
+            for labs in subs.values():           # as wide as the widest: the editors (and the
+                w = max(x.sizeHint().width() for x in labs)    # lists' ▾) one above the other
+                for x in labs:
+                    x.setFixedWidth(w)
             g.addWidget(self._more_field(ev), r, 1, Qt.AlignLeft)
             r += 1
         return r
@@ -3392,6 +3398,64 @@ class AnimalWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     # ------------------------------------------------------------ every animal at once
+    def _table_page(self) -> QWidget:
+        """The table view: the sheet, then copy ▾ and on card at the end of each line but
+        outside it, as the one-animal view has them — a table of their own with no grid, its
+        rows the sheet's, scrolled with it (its bar is the sheet's)."""
+        sh = self.sheet
+        sd = self.side = QTableWidget(0, 2)
+        sd.setHorizontalHeaderLabels(["", "on card"])
+        sd.horizontalHeaderItem(1).setToolTip("Whether the cards show the field (the data are "
+                                              "kept either way): ticked on every card, half on "
+                                              "some")
+        sd.verticalHeader().setVisible(False)
+        sd.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        sd.setColumnWidth(0, 62)
+        sd.setColumnWidth(1, 56)
+        sd.setShowGrid(False)
+        sd.setFrameShape(QFrame.NoFrame)
+        sd.setSelectionMode(QAbstractItemView.NoSelection)
+        sd.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        sd.setFocusPolicy(Qt.NoFocus)
+        sd.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sd.setVerticalScrollMode(sh.verticalScrollMode())
+        sd.setStyleSheet("QTableWidget{background:palette(window);border:none;}"
+                         "QHeaderView::section{background:palette(window);border:none;"
+                         "color:#8d8d8d;}")
+        sd.setFixedWidth(118 + sd.verticalScrollBar().sizeHint().width())
+        sh.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        a, b = sh.verticalScrollBar(), sd.verticalScrollBar()
+        a.valueChanged.connect(b.setValue)
+        b.valueChanged.connect(a.setValue)
+        sh.verticalHeader().sectionResized.connect(lambda r, _o, h: sd.setRowHeight(r, h))
+        sh.horizontalHeader().sectionResized.connect(lambda *_: self._fit_side())
+        gap = QWidget()                          # under it, the sheet's sideways bar's height
+        gap.setFixedHeight(sh.horizontalScrollBar().sizeHint().height())
+        gap.hide()
+        sh.horizontalScrollBar().rangeChanged.connect(lambda _lo, hi: gap.setVisible(hi > 0))
+        page = QWidget()
+        h = QHBoxLayout(page)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        h.addWidget(sh, 1)                       # as wide as it may be (_fit_side caps it)
+        v = QVBoxLayout()
+        v.setContentsMargins(0, sh.frameWidth(), 0, sh.frameWidth())   # rows level with its
+        v.setSpacing(0)
+        v.addWidget(sd)
+        v.addWidget(gap)
+        h.addLayout(v)
+        h.addStretch()                           # 0: what the capped sheet leaves, not half
+        return page
+
+    def _fit_side(self):
+        """The sheet no wider than its columns, the side's header and rows as high as its."""
+        sh, sd = self.sheet, self.side
+        sh.setMaximumWidth(sum(sh.columnWidth(c) for c in range(sh.columnCount()))
+                           + 2 * sh.frameWidth())
+        sd.horizontalHeader().setFixedHeight(sh.horizontalHeader().sizeHint().height())
+        for r in range(sh.rowCount()):
+            sd.setRowHeight(r, sh.rowHeight(r))
+
     def _rows(self):
         """The table view's rows: (label, key, part, colour); a syringe is two rows."""
         st = self.main.study
@@ -3424,23 +3488,18 @@ class AnimalWindow(QMainWindow):
         return out
 
     def _fill_sheet(self):
-        st, sh = self.main.study, self.sheet
+        st, sh, sd = self.main.study, self.sheet, self.side
         rows = self._drawn = self._rows()   # an edit before the next redraw goes by these
         n = len(st.animals)
-        cp, oc = self.SC + n, self.SC + n + 1   # copy ▾, on card: after the animals, as the
-        sh.clear()                              # one-animal view has them
-        sh.setColumnCount(oc + 1)
-        sh.setHorizontalHeaderLabels(["field"] + [a.label or "?" for a in st.animals]
-                                     + ["", "on card"])
-        sh.horizontalHeaderItem(oc).setToolTip("Whether the cards show the field (the data are "
-                                               "kept either way): ticked on every card, half "
-                                               "on some")
+        sh.clear()
+        sh.setColumnCount(self.SC + n)
+        sh.setHorizontalHeaderLabels(["field"] + [a.label or "?" for a in st.animals])
         sh.setRowCount(len(rows))
+        sd.setRowCount(0)                       # copy ▾, on card: beside it (_table_page)
+        sd.setRowCount(len(rows))
         fields = {k for _, _, keys in self._groups(st.animals[0]) for k in keys}
         for r, (lab, key, part, color) in enumerate(rows):
             sh.put(r, 0, lab, editable=False, color=color)
-            sh.put(r, cp, "", editable=False)
-            sh.put(r, oc, "", editable=False)
             ev = isinstance(key, tuple) and key[0] == "ev"     # a procedure's field
             if ev or isinstance(key, str) and key in fields and part in (None, 0):
                 shown = _ev_key(*key[1:]) if ev else key
@@ -3451,9 +3510,9 @@ class AnimalWindow(QMainWindow):
                                 else Qt.Unchecked)
                 c.clicked.connect(lambda v, shown=shown: self.main._show_field(
                     self.main.study.animals[0], shown, v, every=True))
-                sh.setCellWidget(r, cp, self._copy_button(key, lambda: self._sheet_animal(),
-                                                          label=lab))
-                sh.setCellWidget(r, oc, _centred(c))
+                sd.setCellWidget(r, 0, self._copy_button(key, lambda: self._sheet_animal(),
+                                                         label=lab))
+                sd.setCellWidget(r, 1, _centred(c))
             for c, a in enumerate(st.animals, self.SC):
                 text = _cell_text(a, key, part, st.day)
                 life = life_dates(a.extra, st.day) if key in ("DOB", "age", "age at arrival") \
@@ -3464,21 +3523,18 @@ class AnimalWindow(QMainWindow):
                     continue
                 sh.put(r, c, text, tip=text if len(text) > 20 else "")   # 150 px: cut short
         sh.resizeColumnToContents(0)
-        for c in range(self.SC, cp):
+        for c in range(self.SC, self.SC + n):
             sh.setColumnWidth(c, self.COL_W)
-        sh.setColumnWidth(cp, 62)
-        sh.setColumnWidth(oc, 56)
+        self._fit_side()
         self.statusBar().showMessage("Select several cells and type to fill them all (a comma "
                                      "list is dealt out); Ctrl+V pastes a row or a block "
                                      "copied from Excel from the current cell on")
 
     def _table_width(self) -> int:
-        """The window as wide as the table view whole, its vertical bar in."""
+        """The window as wide as the table view whole: the sheet, copy ▾ and on card, the bar."""
         sh = self.sheet
         return (sum(sh.columnWidth(c) for c in range(sh.columnCount())) + 2 * sh.frameWidth()
-                + sh.verticalScrollBar().sizeHint().width()
-                + (sh.verticalHeader().width() if sh.verticalHeader().isVisible() else 0)
-                + self.width() - self.stack.width())
+                + self.side.width() + self.width() - self.stack.width())
 
     def _sheet_animal(self) -> Animal:
         """The table view's animal to copy from: the current cell's, else the first."""

@@ -15,7 +15,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QLabel, QLineEdit, QMenu, QPushButton, QTableWidget,
@@ -510,6 +510,20 @@ combo.lineEdit().editingFinished.emit()
 app.processEvents()
 app.processEvents()
 assert [e.get("modality") for e in al.events if e["kind"] == "imaging"] == ["SPECT", "CT"]
+# a procedure's lines of several fields: system over isotope / EW, the lists one above the other
+root = w.animal_win.scroll.widget()
+labs = {x.text(): x for x in root.findChildren(QLabel) if x.text() in ("system", "isotope / EW")}
+assert len(labs) == 2, list(labs)
+
+
+def _span(lab):
+    lay = lab.parentWidget().layout()
+    e = lay.itemAt(lay.indexOf(lab) + 1).widget()      # the field after its name
+    return e.mapTo(root, QPoint(0, 0)).x(), e.mapTo(root, QPoint(e.width(), 0)).x()
+
+
+assert _span(labs["system"]) == _span(labs["isotope / EW"]), \
+    (_span(labs["system"]), _span(labs["isotope / EW"]))
 # removed by mistake: Ctrl+Z in the animal window brings it back
 n = len(al.events)
 al.events.pop(0)
@@ -530,18 +544,39 @@ w.animal_win.sheet.item(r, len(w.study.animals) + w.animal_win.SC - 1).setText("
 app.processEvents()
 assert [e for e in w.study.animals[-1].events if e["kind"] == "imaging"][1]["start"] == "13:30"
 assert w.res.injected_bq["107"] < before_loss, "the loss comes off"
-# the table view: copy and on card per field, after the last animal (the one-animal view's
-# order), animals 150 px, the window as wide as the table; copy lists every animal, the
-# source greyed. A procedure's field too: ticked, it is on the cards
-sh, n_an = w.animal_win.sheet, len(w.study.animals)
-cp, oc = n_an + 1, n_an + 2
-assert sh.columnCount() == n_an + 3 and sh.horizontalHeaderItem(oc).text() == "on card"
-assert all(sh.columnWidth(c) == 150 for c in range(1, cp)), "150 px an animal"
-assert w.animal_win.width() >= min(w.animal_win._table_width(), w.animal_win.screen()
-    .availableGeometry().width() - 40), "no side scrolling, the screen allowing"
+# the table view: copy and on card per field at the end of its line but outside the table (the
+# one-animal view's order and look), level with the line however scrolled; animals 150 px, the
+# window as wide as the table; copy lists every animal, the source greyed. A procedure's field
+# too: ticked, it is on the cards
+aw, sh, n_an = w.animal_win, w.animal_win.sheet, len(w.study.animals)
+sd = aw.side
+assert sh.columnCount() == n_an + 1 and sd.horizontalHeaderItem(1).text() == "on card", \
+    "copy and on card are not the table's columns"
+assert all(sh.columnWidth(c) == 150 for c in range(1, n_an + 1)), "150 px an animal"
+assert aw.width() >= min(aw._table_width(), aw.screen().availableGeometry().width() - 40), \
+    "no side scrolling, the screen allowing"
+room = aw.stack.width() - sd.width()                  # the sheet takes it, up to its columns
+assert sh.width() == min(sh.maximumWidth(), room), (sh.width(), sh.maximumWidth(), room)
 rw = next(r for r in range(sh.rowCount()) if sh.item(r, 0).text() == "body weight (g)")
-assert sh.cellWidget(rw, oc).findChild(_app.QCheckBox) is not None
-tick = sh.cellWidget(r, oc).findChild(_app.QCheckBox)   # imaging 2 · start
+assert sd.cellWidget(rw, 1).findChild(_app.QCheckBox) is not None
+
+
+def _level(row):
+    """The line's top in the window: in the sheet, beside it."""
+    return (sh.viewport().mapTo(aw, QPoint(0, sh.rowViewportPosition(row))).y(),
+            sd.viewport().mapTo(aw, QPoint(0, sd.rowViewportPosition(row))).y())
+
+
+assert _level(rw)[0] == _level(rw)[1], _level(rw)
+bar = sh.verticalScrollBar()
+assert bar.maximum() > 0, "the table taller than the window: scrolling checked"
+bar.setValue(bar.maximum())
+app.processEvents()
+last = sh.rowCount() - 1
+assert sd.verticalScrollBar().value() == bar.value() and _level(last)[0] == _level(last)[1], \
+    (sd.verticalScrollBar().value(), bar.value(), _level(last))
+bar.setValue(0)
+tick = sd.cellWidget(r, 1).findChild(_app.QCheckBox)   # imaging 2 · start
 tick.click()
 app.processEvents()
 app.processEvents()
@@ -550,7 +585,7 @@ card = next(c for c in w.cards if c.a is w.study.animals[-1])
 assert "imaging 2 · start" in card.fields, list(card.fields)
 if len(w.study.animals) > 1:
     sh.setCurrentCell(rw, w.animal_win.SC + 1)      # the second animal's cell: copied from it
-    menu = sh.cellWidget(rw, cp).menu()
+    menu = sd.cellWidget(rw, 0).menu()
     menu.aboutToShow.emit()
     ticks = [x for x in menu.actions() if x.isCheckable()]
     assert len(ticks) == len(w.study.animals) and not ticks[1].isEnabled() and \
