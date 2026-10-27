@@ -600,6 +600,48 @@ w.animal_win.close()
 from biodist.app import _load_prefs, _save_prefs  # noqa: E402
 w.show_options()
 assert w.options_win.pages.count() == w.options_win.topics.count() == 13
+# Rules › Half-lives: shown, not typed (user, 2026-10-27); a study's own that differs from
+# Options' (DDEP) says it beside, and "use it" takes it, Ctrl+Z undoes
+w.study.half_lives = {"99mTc": 6.00718}                 # a study saved before DDEP
+w.recompute()                                           # a step of its own: what Ctrl+Z goes to
+topic = w.options_win.topics.currentItem().text()
+w.show_options("Rules")
+for _ in range(3):
+    app.processEvents()
+rules = w.options_win.pages.currentWidget()
+texts = [x.text() for x in rules.findChildren(QLabel)]
+assert "99mTc 6.00718 h" in texts and "· DDEP: 6.0067 h" in texts, \
+    [t for t in texts if "99mTc" in t or "DDEP" in t]
+assert not [b for b in rules.findChildren(_app.QDoubleSpinBox)
+            if "half-life" in b.toolTip()], "not typed"
+use = next(b for b in rules.findChildren(QToolButton) if b.text() == "use it")
+use.click()
+for _ in range(3):
+    app.processEvents()
+assert w.study.half_lives["99mTc"] == 6.0067, w.study.half_lives
+w.undo()
+assert w.study.half_lives["99mTc"] == 6.00718, "Ctrl+Z: the study's own again"
+w.study.half_lives = {}
+w.recompute()
+w.show_options(topic)                                   # the window as the rest of the test has it
+# the options file: older than the procedures' standards, they come in once (user, 2026-10-27)
+before = json.dumps(PREFS)
+old = json.loads(before)
+old.pop("standards")
+iso = next(f for f in old["procedures"]["imaging"] if f["name"] == "isotope / EW")
+iso["items"], iso["defaults"] = ["99mTc (140 keV ± 20 %)"], []
+old["procedures"]["diet"][0]["items"].append("HFD")
+was = _load_prefs(got=json.loads(json.dumps(old)))
+iso = next(f for f in PREFS["procedures"]["imaging"] if f["name"] == "isotope / EW")
+assert was and "177Lu" in iso["items"] and "HFD" in PREFS["procedures"]["diet"][0]["items"] \
+    and PREFS["standards"] == _app.STANDARDS, iso
+assert _load_prefs(got=json.loads(json.dumps(PREFS))) is None, "once"
+assert _load_prefs(got=json.loads(was)) is None and "177Lu" not in next(
+    f for f in PREFS["procedures"]["imaging"] if f["name"] == "isotope / EW")["items"], \
+    "Ctrl+Z: as they were, not taken in again"
+_load_prefs(got=json.loads(before))
+assert json.dumps(PREFS) == before, "the options as the rest of this test has them"
+
 tmp = Path(os.environ.get("TEMP", ".")) / "_biodist_options.json"
 keep = dict(PREFS)
 assert _save_prefs(tmp)

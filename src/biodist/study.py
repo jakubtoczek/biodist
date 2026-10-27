@@ -375,6 +375,27 @@ def default_procedures() -> dict:
     return out
 
 
+def with_standards(mine: dict[str, list[dict]], std: dict[str, list[dict]]) -> dict:
+    """`mine`'s kinds with `std`'s fields as it has them (type, lists, pre-filled values, line;
+    one field a name), and what only `mine` has kept: a list's other items after the
+    standard's, a field of its own after the one it followed."""
+    out = {}
+    for kind, fs in mine.items():
+        if kind not in std:
+            out[kind] = fs
+            continue
+        names = {f["name"] for f in std[kind]}
+        new = [dict(f, items=list(dict.fromkeys(f["items"] + [x for g in fs if g["name"] == f["name"]
+                                                               for x in g["items"]])))
+               for f in std[kind]]
+        for i, f in enumerate(fs):
+            if f["name"] not in names:
+                prev = fs[i - 1]["name"] if i else None
+                new.insert(next((j + 1 for j, g in enumerate(new) if g["name"] == prev), 0), f)
+        out[kind] = new
+    return out
+
+
 def holds(when: str, ev: dict) -> bool:
     """'modality = SPECT, PET': the procedure's modality is one of those (any case); '' —
     always."""
@@ -3409,6 +3430,23 @@ def _self_check(data_dir=r"C:\Code\BioDist\data\data_260903"):
         ("cells", "text"), ("date", "date"), ("modality", "list"), ("start", "time")], old
     assert event_text({"kind": "imaging", "modality": "SPECT", "start": ""}) \
         == "imaging: modality SPECT"
+    # an options file older than the standards: theirs, with what only it had (the user's of
+    # 2026-10-27: system twice, 99mTc's window only, planar scintigraphy, HFD, treatment's when)
+    mine = {"imaging": [fdef("modality", "list", MODALITIES + ["planar scintigraphy"]),
+                        fdef("system", "list", ["Mediso SPECT/CT"], line="hardware",
+                             when="modality = SPECT"),
+                        fdef("isotope / EW", "list", ["99mTc (140 keV ± 20 %)"], line="acquisition"),
+                        fdef("system", "list", ["Mediso PET/MRI"], when="modality = PET")],
+            "treatment": [fdef("what"), fdef("when"), fdef("route")], "own": [fdef("x")]}
+    got = with_standards(mine, procs)
+    im = {f["name"]: f for f in got["imaging"]}
+    assert [f["name"] for f in got["imaging"]] == [f["name"] for f in procs["imaging"]], got
+    assert im["system"] == procs["imaging"][[f["name"] for f in procs["imaging"]].index("system")]
+    assert im["modality"]["items"] == MODALITIES + ["planar scintigraphy"], im["modality"]
+    assert [d["value"] for d in im["isotope / EW"]["defaults"]] == [
+        "99mTc (140 keV ± 20 %)", "177Lu", "111In"], im["isotope / EW"]
+    assert [f["name"] for f in got["treatment"]][:2] == ["what", "when"] and \
+        got["own"] == mine["own"] and with_standards(got, procs) == got, got["treatment"]
     # the file: its header first; what BioDist does not read carried; format 1 read
     st = Study(name="t", date="2026-10-21", animals=[Animal.from_dict(
         {"id": "1", "losses": [{"mbq": "0.3", "time": "12:30", "what": "cotton"}],

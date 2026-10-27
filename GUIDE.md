@@ -363,7 +363,9 @@ same list is in Options › Report.
 Saved as they change in `biodist_options.json` beside `BioDist.bat`; Ctrl+Z undoes;
 Export / Import / Reset to defaults. **Import** reads BioDist's options, or InjAct's settings —
 then only what the two share changes (isotopes and half-lives; strains, procedures, animal
-fields, whether the tail is subtracted); the rest stays.
+fields, whether the tail is subtracted); the rest stays. An options file older than the
+procedures' standards (the lab's, as InjAct has them) takes them in once, at the start: each
+kind's fields as the standards have them, what only the file had kept — Ctrl+Z here undoes it.
 
 | page | |
 |---|---|
@@ -409,9 +411,10 @@ they are) — *Back to the defaults* takes them all:
     corrected by its own file's control tubes (scale / offset), or not. The side panel's mass
     table shows each file's control-tube change (⚖ mg; grey when not applied).
 - **Activities and dose**: activities at each injection or one time; tail taken off the
-  injected activity; **half-lives** — the study's own, saved with it (a new study takes
-  Options › Isotopes'). A counter file decay-correcting with another half-life is offered:
-  use the file's.
+  injected activity; **half-lives** — the study's own, shown, saved with it so it reproduces
+  (a new study takes Options › Isotopes', DDEP's as shipped). When it differs from Options',
+  that one is shown beside it: **use it** takes it (Ctrl+Z undoes). A counter file
+  decay-correcting with another half-life is offered: use the file's.
 
 ---
 

@@ -57,7 +57,7 @@ from .study import (
     put_weights, read_animals, read_column, read_weights, recovery_pct, set_half_lives, strip_summary, tail_pct,
     time_problems, unique_names, born, mid_date, colon_time, carry_fixes, unplaced, stamp,
     parse_age, parse_pi, FIELD_TYPES, fdef, clean_fdef, typed_procedures,
-    default_procedures, ev_fields, SPECT_FIELDS, format_pi, time_views, event_time,
+    default_procedures, with_standards, ev_fields, SPECT_FIELDS, format_pi, time_views, event_time,
 )
 
 APP_NAME = "BioDist"
@@ -122,6 +122,8 @@ _OLD_FLAGS = {"low counts": "under the valid range", "dead time": "over the vali
 
 # Options. A JSON file beside BioDist.bat (no registry): read at start, written at every
 # change; Options exports and imports the same file.
+STANDARDS = 1    # the procedures' standards (1: the lab's, as InjAct has them, 2026-10-27): an
+#                  options file with fewer takes them in once (with_standards)
 PREFS = {"isotopes": [list(x) for x in ISOTOPES],                     # name, h
          "strains": [list(x) for x in STRAINS],                          # species, strain, genotype
          "card_fields": [k for k in CARD_KEYS
@@ -154,6 +156,7 @@ PREFS = {"isotopes": [list(x) for x in ISOTOPES],                     # name, h
          "result_flags_menu": [k for k, _ in RESULT_FLAGS],
          # the fields: how each is typed (text, list, time, date), its list, its example
          "procedures": default_procedures(),   # kind -> its fields (Options › Procedures)
+         "standards": STANDARDS,               # the procedures' standards last taken in
          "model_kinds": list(MODEL_KINDS),     # the kinds that are the animal's model
          "animal_fields": default_animal_fields(),   # Options › Animal fields
          "tissue_lists": {},             # recorded tissue lists: name -> tissues, in vial order
@@ -302,9 +305,10 @@ def _flat_prefs(got: dict) -> dict:
             **_from_shared(got)}
 
 
-def _load_prefs(path: Path | None = None, got=None):
+def _load_prefs(path: Path | None = None, got=None) -> str | None:
     """Options from a JSON file (or a dict); what is missing or malformed keeps its default.
-    A file from a newer version is read as far as it is understood."""
+    A file from a newer version is read as far as it is understood. One older than the
+    procedures' standards takes them in: then the options as they were (JSON), for Ctrl+Z."""
     path = path or OPTIONS_FILE
     if got is None:
         try:
@@ -416,6 +420,12 @@ def _load_prefs(path: Path | None = None, got=None):
                      ("mass_warn_mg", "mass_tol_mg"), ("mass_warn_pct", "mass_tol_pct")):
         if new not in got and type(got.get(old)) in num:      # a check until 2026.10.6.2
             PREFS[new] = got[old]
+    if "standards" not in got or PREFS["standards"] < STANDARDS:   # once: removed stays removed
+        PREFS["standards"] = STANDARDS
+        was = json.dumps(PREFS, sort_keys=True)
+        PREFS["procedures"] = with_standards(PREFS["procedures"], default_procedures())
+        return was if json.dumps(PREFS, sort_keys=True) != was else None
+    return None
 
 
 def _read_prefs(path: Path):
@@ -494,6 +504,11 @@ def _date_shown(text, day) -> str:
     """A date of birth — one, a range or a list — tidied to the Options format, or as typed."""
     return format_date(text, day, PREFS["date_format"]) if PREFS["tidy_dates"] else \
         str(text or "")
+
+
+def _hours(s: float) -> str:
+    """A half-life in seconds as hours, every digit the tables have: 6.00718, 159.4632."""
+    return f"{s / 3600:.6f}".rstrip("0").rstrip(".")
 
 
 def _num(v, typed="") -> str:
@@ -4667,24 +4682,27 @@ class OptionsWindow(QMainWindow):
             hb = QWidget()
             hh = QHBoxLayout(hb)
             hh.setContentsMargins(0, 0, 0, 0)
-            for iso in isos:
+            ddep = {_study._canon(k): h for k, h in ISOTOPES}
+            for iso in isos:                     # shown, not typed (user, 2026-10-27)
                 key = next((k for k in s.half_lives if _study._canon(k) == _study._canon(iso)),
                            iso)
-                n = QDoubleSpinBox()
-                n.setKeyboardTracking(False)
-                n.setRange(0, 1e7)
-                n.setDecimals(5)
-                n.setFixedWidth(100)
-                n.setValue((s.hl_of(iso) or 0) / 3600)
-                n.setToolTip("The half-life this study decay-corrects with, saved with it. A new "
-                             "study takes Options › Isotopes'; a counter file that says another "
-                             "is offered when it is read")
-                n.editingFinished.connect(lambda n=n, key=key: n.value() > 0 and abs(
-                    n.value() * 3600 - (s.hl_of(key) or 0)) > 1e-3 and self._rule(
-                    half_lives={**s.half_lives, key: n.value()}))
-                hh.addWidget(QLabel(iso))
+                mine, opt = s.hl_of(iso), half_life_s(iso)
+                n = QLabel(f"{iso} {_hours(mine)} h" if mine else f"{iso}: none")
+                n.setToolTip("The half-life this study decay-corrects with, saved with it, so it "
+                             "reproduces. A new study takes Options › Isotopes'; a counter file "
+                             "that says another is offered when it is read")
                 hh.addWidget(n)
-                hh.addWidget(QLabel("h"))
+                if mine and opt and abs(mine - opt) > 1e-3:
+                    said = "DDEP" if ddep.get(_study._canon(iso)) == round(opt / 3600, 9) \
+                        else "Options › Isotopes"
+                    o = QLabel(f"· {said}: {_hours(opt)} h")
+                    o.setStyleSheet("color:#8d8d8d;")
+                    hh.addWidget(o)
+                    hh.addWidget(AnimalCard._link(
+                        "use it", f"Decay-correct this study with {said}'s {iso} half-life "
+                        "(Ctrl+Z undoes)", lambda _=0, key=key, opt=opt: self._rule(
+                            half_lives={**s.half_lives, key: round(opt / 3600, 9)})))
+                hh.addSpacing(16)
             hh.addStretch(1)
             row("Half-lives", (), hb)
         v.addLayout(f)
@@ -5602,8 +5620,10 @@ class MainWindow(QMainWindow):
         self._names: tuple = (None, [])     # (study, [(animal, ID, label)]) last drawn
         self._saved = ""               # what is on disk, to ask before losing edits
 
-        _load_prefs()
-        _PREFS_UNDO["now"] = [json.dumps(PREFS, sort_keys=True)]   # where Ctrl+Z starts
+        was = _load_prefs()                      # the options before the standards came in
+        _PREFS_UNDO["now"] = [was or json.dumps(PREFS, sort_keys=True)]   # where Ctrl+Z starts
+        if was:
+            _save_prefs()                        # once, a step Ctrl+Z in Options undoes
         self.study = _new_study()
         self._date_typed = False   # until then the first dropped run sets the date
 
