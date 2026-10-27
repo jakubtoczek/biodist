@@ -60,6 +60,9 @@ anything for what it does.
 Every feature, a study step by step, the options and how the numbers are made:
 **[GUIDE.md](GUIDE.md)**. The version is in the window title and on every report.
 
+On Windows, a study (`.json`) also opens from Explorer: right-click › **Open with** › BioDist —
+offered once BioDist has run, never made the default; `uninstall.bat` takes it off the list.
+
 ## Works with
 
 - **InjAct** (Android, at the bench) — its experiment file *is* a BioDist study: open it here,

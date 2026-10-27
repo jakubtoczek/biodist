@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from . import winshell
+from . import openwith, winshell
 
 _PKG = Path(__file__).resolve().parent  # this package's folder
 
@@ -75,6 +75,8 @@ def main() -> int:
 
     winshell.taskbar_identity("BioDist", "BioDist", _PKG.parents[1] / "BioDist.bat",
                               _PKG / "assets" / "biodist.ico")  # before any window
+    openwith.register("BioDist.json", "BioDist", "biodist", _PKG.parent,
+                      _PKG / "assets" / "biodist.ico")  # in Open with for .json
     app = QApplication(sys.argv)
     splash = _splash()
     app.processEvents()
@@ -99,6 +101,8 @@ def main() -> int:
     win = MainWindow()
     win.showMaximized()                # a 1366x768 laptop has no room to spare
     splash.close()
+    if files := [Path(a) for a in sys.argv[1:] if Path(a).exists()]:
+        win.add_files(files)           # files given (Open with)
     return app.exec()
 
 
